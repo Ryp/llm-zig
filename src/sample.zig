@@ -1,5 +1,7 @@
 const llama = @import("llama.zig");
 
+const transformer = @import("transformer.zig");
+
 pub const ProbIndex = extern struct {
     prob: f32 = 0,
     index: c_int = 0,
@@ -12,7 +14,8 @@ pub const Sampler = extern struct {
     topp: f32 = @import("std").mem.zeroes(f32),
     rng_state: c_ulonglong = @import("std").mem.zeroes(c_ulonglong),
 };
-pub fn sample_argmax(arg_probabilities: [*c]f32, arg_n: c_int) c_int {
+
+fn sample_argmax(arg_probabilities: [*c]f32, arg_n: c_int) c_int {
     var probabilities = arg_probabilities;
     _ = &probabilities;
     var n = arg_n;
@@ -39,7 +42,8 @@ pub fn sample_argmax(arg_probabilities: [*c]f32, arg_n: c_int) c_int {
     }
     return max_i;
 }
-pub fn sample_mult(arg_probabilities: [*c]f32, arg_n: c_int, arg_coin: f32) c_int {
+
+fn sample_mult(arg_probabilities: [*c]f32, arg_n: c_int, arg_coin: f32) c_int {
     var probabilities = arg_probabilities;
     _ = &probabilities;
     var n = arg_n;
@@ -63,7 +67,8 @@ pub fn sample_mult(arg_probabilities: [*c]f32, arg_n: c_int, arg_coin: f32) c_in
     }
     return n - @as(c_int, 1);
 }
-pub export fn compare(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_int {
+
+export fn compare(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_int {
     var a = arg_a;
     _ = &a;
     var b = arg_b;
@@ -76,7 +81,8 @@ pub export fn compare(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_int 
     if (a_.*.prob < b_.*.prob) return 1;
     return 0;
 }
-pub fn sample_topp(arg_probabilities: [*c]f32, arg_n: c_int, arg_topp: f32, arg_probindex: [*c]ProbIndex, arg_coin: f32) c_int {
+
+fn sample_topp(arg_probabilities: [*c]f32, arg_n: c_int, arg_topp: f32, arg_probindex: [*c]ProbIndex, arg_coin: f32) c_int {
     var probabilities = arg_probabilities;
     _ = &probabilities;
     var n = arg_n;
@@ -165,17 +171,19 @@ pub fn build_sampler(sampler: [*c]Sampler, vocab_size: c_int, temperature: f32, 
     sampler.*.rng_state = rng_seed;
     sampler.*.probindex = @as([*c]ProbIndex, @ptrCast(@alignCast(llama.malloc(@as(c_ulong, @bitCast(@as(c_long, sampler.*.vocab_size))) *% @sizeOf(ProbIndex)))));
 }
+
 pub fn free_sampler(sampler: [*c]Sampler) void {
     llama.free(@as(?*anyopaque, @ptrCast(sampler.*.probindex)));
 }
-pub fn random_u32(state: [*c]c_ulonglong) c_uint {
+
+fn random_u32(state: [*c]c_ulonglong) c_uint {
     state.* ^= state.* >> @intCast(12);
     state.* ^= state.* << @intCast(25);
     state.* ^= state.* >> @intCast(27);
     return @as(c_uint, @bitCast(@as(c_uint, @truncate((state.* *% @as(c_ulonglong, 2685821657736338717)) >> @intCast(32)))));
 }
 
-pub fn random_f32(state: [*c]c_ulonglong) f32 {
+fn random_f32(state: [*c]c_ulonglong) f32 {
     return @as(f32, @floatFromInt(random_u32(state) >> @intCast(8))) / 16777216.0;
 }
 
@@ -195,7 +203,7 @@ pub fn sample(sampler: [*c]Sampler, logits: [*c]f32) c_int {
                 }).* /= sampler.*.temperature;
             }
         }
-        llama.softmax(logits, sampler.*.vocab_size);
+        transformer.softmax(logits, sampler.*.vocab_size);
         var coin: f32 = random_f32(&sampler.*.rng_state);
         _ = &coin;
         if ((sampler.*.topp <= @as(f32, @floatFromInt(@as(c_int, 0)))) or (sampler.*.topp >= @as(f32, @floatFromInt(@as(c_int, 1))))) {

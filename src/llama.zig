@@ -1,6 +1,8 @@
 const std = @import("std");
+
 const tokenizer = @import("tokenizer.zig");
 const sample = @import("sample.zig");
+const transformer = @import("transformer.zig");
 
 pub const __builtin_bswap16 = @import("std").zig.c_builtins.__builtin_bswap16;
 pub const __builtin_bswap32 = @import("std").zig.c_builtins.__builtin_bswap32;
@@ -1653,16 +1655,6 @@ pub extern fn mincore(__start: ?*anyopaque, __len: usize, __vec: [*c]u8) c_int;
 pub extern fn shm_open(__name: [*c]const u8, __oflag: c_int, __mode: mode_t) c_int;
 pub extern fn shm_unlink(__name: [*c]const u8) c_int;
 
-pub const Config = extern struct {
-    dim: c_int,
-    hidden_dim: c_int,
-    n_layers: c_int,
-    n_heads: c_int,
-    n_kv_heads: c_int,
-    vocab_size: c_int,
-    seq_len: c_int,
-};
-
 pub const TransformerWeights = extern struct {
     token_embedding_table: [*c]f32 = @import("std").mem.zeroes([*c]f32),
     rms_att_weight: [*c]f32 = @import("std").mem.zeroes([*c]f32),
@@ -1693,15 +1685,7 @@ pub const RunState = extern struct {
     value_cache: [*c]f32 = @import("std").mem.zeroes([*c]f32),
 };
 
-pub const Transformer = extern struct {
-    config: Config = @import("std").mem.zeroes(Config),
-    weights: TransformerWeights = @import("std").mem.zeroes(TransformerWeights),
-    state: RunState = @import("std").mem.zeroes(RunState),
-    fd: c_int = @import("std").mem.zeroes(c_int),
-    data: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    file_size: isize = @import("std").mem.zeroes(isize),
-};
-pub fn malloc_run_state(arg_s: [*c]RunState, arg_p: [*c]Config) void {
+pub fn malloc_run_state(arg_s: [*c]RunState, arg_p: [*c]transformer.Config) void {
     var s = arg_s;
     _ = &s;
     var p = arg_p;
@@ -1723,6 +1707,7 @@ pub fn malloc_run_state(arg_s: [*c]RunState, arg_p: [*c]Config) void {
         exit(@as(c_int, 1));
     }
 }
+
 pub fn free_run_state(arg_s: [*c]RunState) void {
     var s = arg_s;
     _ = &s;
@@ -1737,7 +1722,8 @@ pub fn free_run_state(arg_s: [*c]RunState) void {
     free(@as(?*anyopaque, @ptrCast(s.*.key_cache)));
     free(@as(?*anyopaque, @ptrCast(s.*.value_cache)));
 }
-pub fn memory_map_weights(arg_w: [*c]TransformerWeights, arg_p: [*c]Config, arg_ptr: [*c]f32, arg_shared_weights: c_int) void {
+
+pub fn memory_map_weights(arg_w: [*c]TransformerWeights, arg_p: [*c]transformer.Config, arg_ptr: [*c]f32, arg_shared_weights: c_int) void {
     var w = arg_w;
     _ = &w;
     var p = arg_p;
@@ -1776,7 +1762,7 @@ pub fn memory_map_weights(arg_w: [*c]TransformerWeights, arg_p: [*c]Config, arg_
     ptr += @as(usize, @bitCast(@as(isize, @intCast(@divTrunc(p.*.seq_len * head_size, @as(c_int, 2))))));
     w.*.wcls = if (shared_weights != 0) w.*.token_embedding_table else ptr;
 }
-pub fn read_checkpoint(arg_checkpoint: [*c]const u8, arg_config: [*c]Config, arg_weights: [*c]TransformerWeights, arg_fd: [*c]c_int, arg_data: [*c][*c]f32, arg_file_size: [*c]isize) void {
+pub fn read_checkpoint(arg_checkpoint: [*c]const u8, arg_config: [*c]transformer.Config, arg_weights: [*c]TransformerWeights, arg_fd: [*c]c_int, arg_data: [*c][*c]f32, arg_file_size: [*c]isize) void {
     var checkpoint = arg_checkpoint;
     _ = &checkpoint;
     var config = arg_config;
@@ -1795,7 +1781,7 @@ pub fn read_checkpoint(arg_checkpoint: [*c]const u8, arg_config: [*c]Config, arg
         _ = fprintf(stderr, "Couldn't open file %s\n", checkpoint);
         exit(@as(c_int, 1));
     }
-    if (fread(@as(?*anyopaque, @ptrCast(config)), @sizeOf(Config), @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1)))), file) != @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1))))) {
+    if (fread(@as(?*anyopaque, @ptrCast(config)), @sizeOf(transformer.Config), @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1)))), file) != @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1))))) {
         exit(@as(c_int, 1));
     }
 
@@ -1817,382 +1803,20 @@ pub fn read_checkpoint(arg_checkpoint: [*c]const u8, arg_config: [*c]Config, arg
     //    _ = fprintf(stderr, "mmap failed!\n");
     //    exit(@as(c_int, 1));
     //}
-    var weights_ptr: [*c]f32 = data.* + (@sizeOf(Config) / @sizeOf(f32));
+    var weights_ptr: [*c]f32 = data.* + (@sizeOf(transformer.Config) / @sizeOf(f32));
     _ = &weights_ptr;
+
     memory_map_weights(weights, config, weights_ptr, shared_weights);
 }
-pub fn build_transformer(arg_t: [*c]Transformer, arg_checkpoint_path: [*c]const u8) void {
-    var t = arg_t;
-    _ = &t;
-    var checkpoint_path = arg_checkpoint_path;
-    _ = &checkpoint_path;
-    read_checkpoint(checkpoint_path, &t.*.config, &t.*.weights, &t.*.fd, &t.*.data, &t.*.file_size);
-    malloc_run_state(&t.*.state, &t.*.config);
-}
-pub fn free_transformer(arg_t: [*c]Transformer) void {
-    var t = arg_t;
-    _ = &t;
-    //if (t.*.data != @as([*c]f32, @ptrCast(@as(?*anyopaque, @ptrFromInt(@as(usize, 0) -% 1))))) {
-        _ = munmap(@as(?*anyopaque, @ptrCast(t.*.data)), @as(usize, @bitCast(t.*.file_size)));
-    //}
-    if (t.*.fd != -@as(c_int, 1)) {
-        _ = close(t.*.fd);
-    }
-    free_run_state(&t.*.state);
-}
-pub fn rmsnorm(arg_o: [*c]f32, arg_x: [*c]f32, arg_weight: [*c]f32, arg_size: c_int) void {
-    var o = arg_o;
-    _ = &o;
-    var x = arg_x;
-    _ = &x;
-    var weight = arg_weight;
-    _ = &weight;
-    var size = arg_size;
-    _ = &size;
-    var ss: f32 = 0.0;
-    _ = &ss;
-    {
-        var j: c_int = 0;
-        _ = &j;
-        while (j < size) : (j += 1) {
-            ss += (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* * (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*;
-        }
-    }
-    ss /= @as(f32, @floatFromInt(size));
-    ss += 0.000009999999747378752;
-    ss = 1.0 / sqrtf(ss);
-    {
-        var j: c_int = 0;
-        _ = &j;
-        while (j < size) : (j += 1) {
-            (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk o + @as(usize, @intCast(tmp)) else break :blk o - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* = (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk weight + @as(usize, @intCast(tmp)) else break :blk weight - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* * (ss * (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*);
-        }
-    }
-}
-pub fn softmax(arg_x: [*c]f32, arg_size: c_int) void {
-    var x = arg_x;
-    _ = &x;
-    var size = arg_size;
-    _ = &size;
-    var max_val: f32 = x[@as(c_uint, @intCast(@as(c_int, 0)))];
-    _ = &max_val;
-    {
-        var i: c_int = 1;
-        _ = &i;
-        while (i < size) : (i += 1) {
-            if ((blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* > max_val) {
-                max_val = (blk: {
-                    const tmp = i;
-                    if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).*;
-            }
-        }
-    }
-    var sum: f32 = 0.0;
-    _ = &sum;
-    {
-        var i: c_int = 0;
-        _ = &i;
-        while (i < size) : (i += 1) {
-            (blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* = expf((blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* - max_val);
-            sum += (blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*;
-        }
-    }
-    {
-        var i: c_int = 0;
-        _ = &i;
-        while (i < size) : (i += 1) {
-            (blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* /= sum;
-        }
-    }
-}
-pub fn matmul(arg_xout: [*c]f32, arg_x: [*c]f32, arg_w: [*c]f32, arg_n: c_int, arg_d: c_int) void {
-    var xout = arg_xout;
-    _ = &xout;
-    var x = arg_x;
-    _ = &x;
-    var w = arg_w;
-    _ = &w;
-    var n = arg_n;
-    _ = &n;
-    var d = arg_d;
-    _ = &d;
-    var i: c_int = undefined;
-    _ = &i;
-    {
-        i = 0;
-        while (i < d) : (i += 1) {
-            var val: f32 = 0.0;
-            _ = &val;
-            {
-                var j: c_int = 0;
-                _ = &j;
-                while (j < n) : (j += 1) {
-                    val += (blk: {
-                        const tmp = (i * n) + j;
-                        if (tmp >= 0) break :blk w + @as(usize, @intCast(tmp)) else break :blk w - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).* * (blk: {
-                        const tmp = j;
-                        if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
-                }
-            }
-            (blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk xout + @as(usize, @intCast(tmp)) else break :blk xout - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* = val;
-        }
-    }
-}
-pub fn forward(arg_transformer: [*c]Transformer, arg_token: c_int, arg_pos: c_int) [*c]f32 {
-    var transformer = arg_transformer;
-    _ = &transformer;
-    var token = arg_token;
-    _ = &token;
-    var pos = arg_pos;
-    _ = &pos;
-    var p: [*c]Config = &transformer.*.config;
-    _ = &p;
-    var w: [*c]TransformerWeights = &transformer.*.weights;
-    _ = &w;
-    var s: [*c]RunState = &transformer.*.state;
-    _ = &s;
-    var x: [*c]f32 = s.*.x;
-    _ = &x;
-    var dim: c_int = p.*.dim;
-    _ = &dim;
-    var kv_dim: c_int = @divTrunc(p.*.dim * p.*.n_kv_heads, p.*.n_heads);
-    _ = &kv_dim;
-    var kv_mul: c_int = @divTrunc(p.*.n_heads, p.*.n_kv_heads);
-    _ = &kv_mul;
-    var hidden_dim: c_int = p.*.hidden_dim;
-    _ = &hidden_dim;
-    var head_size: c_int = @divTrunc(dim, p.*.n_heads);
-    _ = &head_size;
-    var content_row: [*c]f32 = w.*.token_embedding_table + @as(usize, @bitCast(@as(isize, @intCast(token * dim))));
-    _ = &content_row;
-    _ = memcpy(@as(?*anyopaque, @ptrCast(x)), @as(?*const anyopaque, @ptrCast(content_row)), @as(c_ulong, @bitCast(@as(c_long, dim))) *% @sizeOf(f32));
-    {
-        var l: c_ulonglong = 0;
-        _ = &l;
-        while (l < @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.n_layers)))) : (l +%= 1) {
-            rmsnorm(s.*.xb, x, w.*.rms_att_weight + (l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))), dim);
-            var loff: c_int = @as(c_int, @bitCast(@as(c_uint, @truncate((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.seq_len)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, kv_dim)))))));
-            _ = &loff;
-            s.*.k = (s.*.key_cache + @as(usize, @bitCast(@as(isize, @intCast(loff))))) + @as(usize, @bitCast(@as(isize, @intCast(pos * kv_dim))));
-            s.*.v = (s.*.value_cache + @as(usize, @bitCast(@as(isize, @intCast(loff))))) + @as(usize, @bitCast(@as(isize, @intCast(pos * kv_dim))));
-            matmul(s.*.q, s.*.xb, w.*.wq + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))), dim, dim);
-            matmul(s.*.k, s.*.xb, w.*.wk + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, kv_dim)))), dim, kv_dim);
-            matmul(s.*.v, s.*.xb, w.*.wv + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, kv_dim)))), dim, kv_dim);
-            {
-                var i: c_int = 0;
-                _ = &i;
-                while (i < dim) : (i += @as(c_int, 2)) {
-                    var head_dim: c_int = @import("std").zig.c_translation.signedRemainder(i, head_size);
-                    _ = &head_dim;
-                    var freq: f32 = 1.0 / powf(10000.0, @as(f32, @floatFromInt(head_dim)) / @as(f32, @floatFromInt(head_size)));
-                    _ = &freq;
-                    var val: f32 = @as(f32, @floatFromInt(pos)) * freq;
-                    _ = &val;
-                    var fcr: f32 = cosf(val);
-                    _ = &fcr;
-                    var fci: f32 = sinf(val);
-                    _ = &fci;
-                    var rotn: c_int = if (i < kv_dim) @as(c_int, 2) else @as(c_int, 1);
-                    _ = &rotn;
-                    {
-                        var v: c_int = 0;
-                        _ = &v;
-                        while (v < rotn) : (v += 1) {
-                            var vec: [*c]f32 = if (v == @as(c_int, 0)) s.*.q else s.*.k;
-                            _ = &vec;
-                            var v0: f32 = (blk: {
-                                const tmp = i;
-                                if (tmp >= 0) break :blk vec + @as(usize, @intCast(tmp)) else break :blk vec - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).*;
-                            _ = &v0;
-                            var v1: f32 = (blk: {
-                                const tmp = i + @as(c_int, 1);
-                                if (tmp >= 0) break :blk vec + @as(usize, @intCast(tmp)) else break :blk vec - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).*;
-                            _ = &v1;
-                            (blk: {
-                                const tmp = i;
-                                if (tmp >= 0) break :blk vec + @as(usize, @intCast(tmp)) else break :blk vec - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).* = (v0 * fcr) - (v1 * fci);
-                            (blk: {
-                                const tmp = i + @as(c_int, 1);
-                                if (tmp >= 0) break :blk vec + @as(usize, @intCast(tmp)) else break :blk vec - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).* = (v0 * fci) + (v1 * fcr);
-                        }
-                    }
-                }
-            }
-            var h: c_int = undefined;
-            _ = &h;
-            {
-                h = 0;
-                while (h < p.*.n_heads) : (h += 1) {
-                    var q: [*c]f32 = s.*.q + @as(usize, @bitCast(@as(isize, @intCast(h * head_size))));
-                    _ = &q;
-                    var att: [*c]f32 = s.*.att + @as(usize, @bitCast(@as(isize, @intCast(h * p.*.seq_len))));
-                    _ = &att;
-                    {
-                        var t: c_int = 0;
-                        _ = &t;
-                        while (t <= pos) : (t += 1) {
-                            var k: [*c]f32 = ((s.*.key_cache + @as(usize, @bitCast(@as(isize, @intCast(loff))))) + @as(usize, @bitCast(@as(isize, @intCast(t * kv_dim))))) + @as(usize, @bitCast(@as(isize, @intCast(@divTrunc(h, kv_mul) * head_size))));
-                            _ = &k;
-                            var score: f32 = 0.0;
-                            _ = &score;
-                            {
-                                var i: c_int = 0;
-                                _ = &i;
-                                while (i < head_size) : (i += 1) {
-                                    score += (blk: {
-                                        const tmp = i;
-                                        if (tmp >= 0) break :blk q + @as(usize, @intCast(tmp)) else break :blk q - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                                    }).* * (blk: {
-                                        const tmp = i;
-                                        if (tmp >= 0) break :blk k + @as(usize, @intCast(tmp)) else break :blk k - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                                    }).*;
-                                }
-                            }
-                            score /= sqrtf(@as(f32, @floatFromInt(head_size)));
-                            (blk: {
-                                const tmp = t;
-                                if (tmp >= 0) break :blk att + @as(usize, @intCast(tmp)) else break :blk att - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).* = score;
-                        }
-                    }
-                    softmax(att, pos + @as(c_int, 1));
-                    var xb: [*c]f32 = s.*.xb + @as(usize, @bitCast(@as(isize, @intCast(h * head_size))));
-                    _ = &xb;
-                    _ = memset(@as(?*anyopaque, @ptrCast(xb)), @as(c_int, 0), @as(c_ulong, @bitCast(@as(c_long, head_size))) *% @sizeOf(f32));
-                    {
-                        var t: c_int = 0;
-                        _ = &t;
-                        while (t <= pos) : (t += 1) {
-                            var v: [*c]f32 = ((s.*.value_cache + @as(usize, @bitCast(@as(isize, @intCast(loff))))) + @as(usize, @bitCast(@as(isize, @intCast(t * kv_dim))))) + @as(usize, @bitCast(@as(isize, @intCast(@divTrunc(h, kv_mul) * head_size))));
-                            _ = &v;
-                            var a: f32 = (blk: {
-                                const tmp = t;
-                                if (tmp >= 0) break :blk att + @as(usize, @intCast(tmp)) else break :blk att - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).*;
-                            _ = &a;
-                            {
-                                var i: c_int = 0;
-                                _ = &i;
-                                while (i < head_size) : (i += 1) {
-                                    (blk: {
-                                        const tmp = i;
-                                        if (tmp >= 0) break :blk xb + @as(usize, @intCast(tmp)) else break :blk xb - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                                    }).* += a * (blk: {
-                                        const tmp = i;
-                                        if (tmp >= 0) break :blk v + @as(usize, @intCast(tmp)) else break :blk v - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                                    }).*;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            matmul(s.*.xb2, s.*.xb, w.*.wo + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))), dim, dim);
-            {
-                var i: c_int = 0;
-                _ = &i;
-                while (i < dim) : (i += 1) {
-                    (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).* += (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk s.*.xb2 + @as(usize, @intCast(tmp)) else break :blk s.*.xb2 - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
-                }
-            }
-            rmsnorm(s.*.xb, x, w.*.rms_ffn_weight + (l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))), dim);
-            matmul(s.*.hb, s.*.xb, w.*.w1 + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, hidden_dim)))), dim, hidden_dim);
-            matmul(s.*.hb2, s.*.xb, w.*.w3 + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, hidden_dim)))), dim, hidden_dim);
-            {
-                var i: c_int = 0;
-                _ = &i;
-                while (i < hidden_dim) : (i += 1) {
-                    var val: f32 = (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk s.*.hb + @as(usize, @intCast(tmp)) else break :blk s.*.hb - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
-                    _ = &val;
-                    val *= 1.0 / (1.0 + expf(-val));
-                    val *= (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk s.*.hb2 + @as(usize, @intCast(tmp)) else break :blk s.*.hb2 - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
-                    (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk s.*.hb + @as(usize, @intCast(tmp)) else break :blk s.*.hb - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).* = val;
-                }
-            }
-            matmul(s.*.xb, s.*.hb, w.*.w2 + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, hidden_dim)))), hidden_dim, dim);
-            {
-                var i: c_int = 0;
-                _ = &i;
-                while (i < dim) : (i += 1) {
-                    (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).* += (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk s.*.xb + @as(usize, @intCast(tmp)) else break :blk s.*.xb - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
-                }
-            }
-        }
-    }
-    rmsnorm(x, x, w.*.rms_final_weight, dim);
-    matmul(s.*.logits, x, w.*.wcls, p.*.dim, p.*.vocab_size);
-    return s.*.logits;
-}
-pub fn time_in_ms() c_long {
+
+fn time_in_ms() c_long {
     var time_1: struct_timespec = undefined;
     _ = &time_1;
     _ = clock_gettime(@as(c_int, 0), &time_1);
     return (time_1.tv_sec * @as(__time_t, @bitCast(@as(c_long, @as(c_int, 1000))))) + @divTrunc(time_1.tv_nsec, @as(__syscall_slong_t, @bitCast(@as(c_long, @as(c_int, 1000000)))));
 }
-pub fn generate(arg_transformer: [*c]Transformer, arg_tokenizer: [*c]tokenizer.Tokenizer, arg_sampler: [*c]sample.Sampler, arg_prompt: [*c]const u8, arg_steps: c_int) void {
-    var transformer = arg_transformer;
-    _ = &transformer;
+
+pub fn generate(arg_transformer: [*c]transformer.Transformer, arg_tokenizer: [*c]tokenizer.Tokenizer, arg_sampler: [*c]sample.Sampler, arg_prompt: [*c]const u8, arg_steps: c_int) void {
     var sampler = arg_sampler;
     _ = &sampler;
     var prompt = arg_prompt;
@@ -2222,7 +1846,7 @@ pub fn generate(arg_transformer: [*c]Transformer, arg_tokenizer: [*c]tokenizer.T
     var pos: c_int = 0;
     _ = &pos;
     while (pos < steps) {
-        var logits: [*c]f32 = forward(transformer, token, pos);
+        var logits: [*c]f32 = transformer.forward(arg_transformer, token, pos);
         _ = &logits;
         if (pos < (num_prompt_tokens - @as(c_int, 1))) {
             next = (blk: {
@@ -2251,106 +1875,5 @@ pub fn generate(arg_transformer: [*c]Transformer, arg_tokenizer: [*c]tokenizer.T
         _ = &end;
         _ = fprintf(stderr, "achieved tok/s: %f\n", (@as(f64, @floatFromInt(pos - @as(c_int, 1))) / @as(f64, @floatFromInt(end - start))) * @as(f64, @floatFromInt(@as(c_int, 1000))));
     }
-    free(@as(?*anyopaque, @ptrCast(prompt_tokens)));
-}
-pub fn read_stdin(arg_guide: [*c]const u8, arg_buffer: [*c]u8, arg_bufsize: usize) void {
-    var guide = arg_guide;
-    _ = &guide;
-    var buffer = arg_buffer;
-    _ = &buffer;
-    var bufsize = arg_bufsize;
-    _ = &bufsize;
-    _ = printf("%s", guide);
-    if (fgets(buffer, @as(c_int, @bitCast(@as(c_uint, @truncate(bufsize)))), stdin) != @as([*c]u8, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0))))))) {
-        var len: usize = strlen(buffer);
-        _ = &len;
-        if ((len > @as(usize, @bitCast(@as(c_long, @as(c_int, 0))))) and (@as(c_int, @bitCast(@as(c_uint, buffer[len -% @as(usize, @bitCast(@as(c_long, @as(c_int, 1))))]))) == @as(c_int, '\n'))) {
-            buffer[len -% @as(usize, @bitCast(@as(c_long, @as(c_int, 1))))] = '\x00';
-        }
-    }
-}
-
-pub fn chat(transformer: [*c]Transformer, arg_tokenizer: [*c]tokenizer.Tokenizer, sampler: [*c]sample.Sampler, cli_user_prompt: [*c]const u8, cli_system_prompt: [*c]u8, steps: c_int) void {
-   var system_prompt: [512]u8 = undefined;
-    _ = &system_prompt;
-    var user_prompt: [512]u8 = undefined;
-    _ = &user_prompt;
-    var rendered_prompt: [1152]u8 = undefined;
-    _ = &rendered_prompt;
-    var num_prompt_tokens: c_int = 0;
-    _ = &num_prompt_tokens;
-    var prompt_tokens: [*c]c_int = @as([*c]c_int, @ptrCast(@alignCast(malloc(@as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1152)))) *% @sizeOf(c_int)))));
-    _ = &prompt_tokens;
-    var user_idx: c_int = undefined;
-    _ = &user_idx;
-    var user_turn: i8 = 1;
-    _ = &user_turn;
-    var next: c_int = undefined;
-    _ = &next;
-    var token: c_int = undefined;
-    _ = &token;
-    var prev_token: c_int = undefined;
-    _ = &prev_token;
-    var pos: c_int = 0;
-    _ = &pos;
-    while (pos < steps) {
-        if (user_turn != 0) {
-            if (pos == @as(c_int, 0)) {
-                if (cli_system_prompt == @as([*c]u8, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0))))))) {
-                    read_stdin("Enter system prompt (optional): ", @as([*c]u8, @ptrCast(@alignCast(&system_prompt))), @sizeOf([512]u8));
-                } else {
-                    _ = strcpy(@as([*c]u8, @ptrCast(@alignCast(&system_prompt))), cli_system_prompt);
-                }
-            }
-            if ((pos == @as(c_int, 0)) and (cli_user_prompt != @as([*c]u8, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0)))))))) {
-                _ = strcpy(@as([*c]u8, @ptrCast(@alignCast(&user_prompt))), cli_user_prompt);
-            } else {
-                read_stdin("User: ", @as([*c]u8, @ptrCast(@alignCast(&user_prompt))), @sizeOf([512]u8));
-            }
-            if ((pos == @as(c_int, 0)) and (@as(c_int, @bitCast(@as(c_uint, system_prompt[@as(c_uint, @intCast(@as(c_int, 0)))]))) != @as(c_int, '\x00'))) {
-                var system_template: [38:0]u8 = "[INST] <<SYS>>\n%s\n<</SYS>>\n\n%s [/INST]".*;
-                _ = &system_template;
-                _ = sprintf(@as([*c]u8, @ptrCast(@alignCast(&rendered_prompt))), @as([*c]u8, @ptrCast(@alignCast(&system_template))), @as([*c]u8, @ptrCast(@alignCast(&system_prompt))), @as([*c]u8, @ptrCast(@alignCast(&user_prompt))));
-            } else {
-                var user_template: [17:0]u8 = "[INST] %s [/INST]".*;
-                _ = &user_template;
-                _ = sprintf(@as([*c]u8, @ptrCast(@alignCast(&rendered_prompt))), @as([*c]u8, @ptrCast(@alignCast(&user_template))), @as([*c]u8, @ptrCast(@alignCast(&user_prompt))));
-            }
-            tokenizer.encode(arg_tokenizer, @as([*c]u8, @ptrCast(@alignCast(&rendered_prompt))), @as(i8, @bitCast(@as(i8, @truncate(@as(c_int, 1))))), @as(i8, @bitCast(@as(i8, @truncate(@as(c_int, 0))))), prompt_tokens, &num_prompt_tokens);
-            user_idx = 0;
-            user_turn = 0;
-            _ = printf("Assistant: ");
-        }
-        if (user_idx < num_prompt_tokens) {
-            token = (blk: {
-                const tmp = blk_1: {
-                    const ref = &user_idx;
-                    const tmp_2 = ref.*;
-                    ref.* += 1;
-                    break :blk_1 tmp_2;
-                };
-                if (tmp >= 0) break :blk prompt_tokens + @as(usize, @intCast(tmp)) else break :blk prompt_tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*;
-        } else {
-            token = next;
-        }
-        if (token == @as(c_int, 2)) {
-            user_turn = 1;
-        }
-        var logits: [*c]f32 = forward(transformer, token, pos);
-        _ = &logits;
-        next = sample.sample(sampler, logits);
-        pos += 1;
-        if ((user_idx >= num_prompt_tokens) and (next != @as(c_int, 2))) {
-            var piece: [*c]u8 = tokenizer.decode(arg_tokenizer, token, next);
-            _ = &piece;
-            tokenizer.safe_printf(piece);
-            _ = fflush(stdout);
-        }
-        if (next == @as(c_int, 2)) {
-            _ = printf("\n");
-        }
-    }
-    _ = printf("\n");
     free(@as(?*anyopaque, @ptrCast(prompt_tokens)));
 }
