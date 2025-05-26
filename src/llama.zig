@@ -1670,116 +1670,47 @@ pub const TransformerWeights = extern struct {
     wcls: [*c]f32 = @import("std").mem.zeroes([*c]f32),
 };
 
-pub const RunState = extern struct {
-    x: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    xb: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    xb2: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    hb: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    hb2: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    q: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    k: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    v: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    att: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    logits: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    key_cache: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    value_cache: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-};
-
-pub fn malloc_run_state(arg_s: [*c]RunState, arg_p: [*c]transformer.Config) void {
-    var s = arg_s;
-    _ = &s;
-    var p = arg_p;
-    _ = &p;
-    var kv_dim: c_int = @divTrunc(p.*.dim * p.*.n_kv_heads, p.*.n_heads);
-    _ = &kv_dim;
-    s.*.x = @as([*c]f32, @ptrCast(@alignCast(calloc(@as(c_ulong, @bitCast(@as(c_long, p.*.dim))), @sizeOf(f32)))));
-    s.*.xb = @as([*c]f32, @ptrCast(@alignCast(calloc(@as(c_ulong, @bitCast(@as(c_long, p.*.dim))), @sizeOf(f32)))));
-    s.*.xb2 = @as([*c]f32, @ptrCast(@alignCast(calloc(@as(c_ulong, @bitCast(@as(c_long, p.*.dim))), @sizeOf(f32)))));
-    s.*.hb = @as([*c]f32, @ptrCast(@alignCast(calloc(@as(c_ulong, @bitCast(@as(c_long, p.*.hidden_dim))), @sizeOf(f32)))));
-    s.*.hb2 = @as([*c]f32, @ptrCast(@alignCast(calloc(@as(c_ulong, @bitCast(@as(c_long, p.*.hidden_dim))), @sizeOf(f32)))));
-    s.*.q = @as([*c]f32, @ptrCast(@alignCast(calloc(@as(c_ulong, @bitCast(@as(c_long, p.*.dim))), @sizeOf(f32)))));
-    s.*.key_cache = @as([*c]f32, @ptrCast(@alignCast(calloc(@as(c_ulong, @bitCast(@as(c_long, (p.*.n_layers * p.*.seq_len) * kv_dim))), @sizeOf(f32)))));
-    s.*.value_cache = @as([*c]f32, @ptrCast(@alignCast(calloc(@as(c_ulong, @bitCast(@as(c_long, (p.*.n_layers * p.*.seq_len) * kv_dim))), @sizeOf(f32)))));
-    s.*.att = @as([*c]f32, @ptrCast(@alignCast(calloc(@as(c_ulong, @bitCast(@as(c_long, p.*.n_heads * p.*.seq_len))), @sizeOf(f32)))));
-    s.*.logits = @as([*c]f32, @ptrCast(@alignCast(calloc(@as(c_ulong, @bitCast(@as(c_long, p.*.vocab_size))), @sizeOf(f32)))));
-    if (((((((((!(s.*.x != null) or !(s.*.xb != null)) or !(s.*.xb2 != null)) or !(s.*.hb != null)) or !(s.*.hb2 != null)) or !(s.*.q != null)) or !(s.*.key_cache != null)) or !(s.*.value_cache != null)) or !(s.*.att != null)) or !(s.*.logits != null)) {
-        _ = fprintf(stderr, "malloc failed!\n");
-        exit(@as(c_int, 1));
-    }
-}
-
-pub fn free_run_state(arg_s: [*c]RunState) void {
-    var s = arg_s;
-    _ = &s;
-    free(@as(?*anyopaque, @ptrCast(s.*.x)));
-    free(@as(?*anyopaque, @ptrCast(s.*.xb)));
-    free(@as(?*anyopaque, @ptrCast(s.*.xb2)));
-    free(@as(?*anyopaque, @ptrCast(s.*.hb)));
-    free(@as(?*anyopaque, @ptrCast(s.*.hb2)));
-    free(@as(?*anyopaque, @ptrCast(s.*.q)));
-    free(@as(?*anyopaque, @ptrCast(s.*.att)));
-    free(@as(?*anyopaque, @ptrCast(s.*.logits)));
-    free(@as(?*anyopaque, @ptrCast(s.*.key_cache)));
-    free(@as(?*anyopaque, @ptrCast(s.*.value_cache)));
-}
-
-pub fn memory_map_weights(arg_w: [*c]TransformerWeights, arg_p: [*c]transformer.Config, arg_ptr: [*c]f32, arg_shared_weights: c_int) void {
-    var w = arg_w;
-    _ = &w;
-    var p = arg_p;
-    _ = &p;
-    var ptr = arg_ptr;
-    _ = &ptr;
-    var shared_weights = arg_shared_weights;
-    _ = &shared_weights;
-    var head_size: c_int = @divTrunc(p.*.dim, p.*.n_heads);
+pub fn memory_map_weights(w: [*c]TransformerWeights, p: [*c]transformer.Config, arg_ptr: [*c]f32, shared_weights: bool) void {
+    var head_size = @divTrunc(p.*.dim, p.*.n_heads);
     _ = &head_size;
-    var n_layers: c_ulonglong = @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.n_layers)));
+    var n_layers = p.*.n_layers;
     _ = &n_layers;
+
+    var ptr = arg_ptr;
+
     w.*.token_embedding_table = ptr;
-    ptr += @as(usize, @bitCast(@as(isize, @intCast(p.*.vocab_size * p.*.dim))));
+    ptr += p.*.vocab_size * p.*.dim;
     w.*.rms_att_weight = ptr;
-    ptr += n_layers *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.dim)));
+    ptr += n_layers * p.*.dim;
     w.*.wq = ptr;
-    ptr += (n_layers *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.n_heads * head_size)));
+    ptr += (n_layers * p.*.dim * p.*.n_heads * head_size);
     w.*.wk = ptr;
-    ptr += (n_layers *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.n_kv_heads * head_size)));
+    ptr += (n_layers * p.*.dim * p.*.n_kv_heads * head_size);
     w.*.wv = ptr;
-    ptr += (n_layers *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.n_kv_heads * head_size)));
+    ptr += (n_layers * p.*.dim * p.*.n_kv_heads * head_size);
     w.*.wo = ptr;
-    ptr += (n_layers *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.n_heads * head_size)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.dim)));
+    ptr += n_layers * p.*.n_heads * head_size * p.*.dim;
     w.*.rms_ffn_weight = ptr;
-    ptr += n_layers *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.dim)));
+    ptr += n_layers *  p.*.dim;
     w.*.w1 = ptr;
-    ptr += (n_layers *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.hidden_dim)));
+    ptr += n_layers * p.*.dim * p.*.hidden_dim;
     w.*.w2 = ptr;
-    ptr += (n_layers *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.hidden_dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.dim)));
+    ptr += n_layers * p.*.hidden_dim * p.*.dim;
     w.*.w3 = ptr;
-    ptr += (n_layers *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.hidden_dim)));
+    ptr += n_layers * p.*.dim * p.*.hidden_dim;
     w.*.rms_final_weight = ptr;
-    ptr += @as(usize, @bitCast(@as(isize, @intCast(p.*.dim))));
-    ptr += @as(usize, @bitCast(@as(isize, @intCast(@divTrunc(p.*.seq_len * head_size, @as(c_int, 2))))));
-    ptr += @as(usize, @bitCast(@as(isize, @intCast(@divTrunc(p.*.seq_len * head_size, @as(c_int, 2))))));
-    w.*.wcls = if (shared_weights != 0) w.*.token_embedding_table else ptr;
+    ptr += p.*.dim;
+    ptr += @divTrunc(p.*.seq_len * head_size, 2);
+    ptr += @divTrunc(p.*.seq_len * head_size, 2);
+    w.*.wcls = if (shared_weights) w.*.token_embedding_table else ptr;
 }
-pub fn read_checkpoint(arg_checkpoint: [*c]const u8, arg_config: [*c]transformer.Config, arg_weights: [*c]TransformerWeights, arg_fd: [*c]c_int, arg_data: [*c][*c]f32, arg_file_size: [*c]isize) void {
-    var checkpoint = arg_checkpoint;
-    _ = &checkpoint;
-    var config = arg_config;
-    _ = &config;
-    var weights = arg_weights;
-    _ = &weights;
-    var fd = arg_fd;
-    _ = &fd;
-    var data = arg_data;
-    _ = &data;
-    var file_size = arg_file_size;
-    _ = &file_size;
+
+pub fn read_checkpoint(checkpoint: [:0]const u8, config: [*c]transformer.Config, weights: [*c]TransformerWeights, fd: [*c]c_int, data: *[*]f32, file_size: [*c]isize) void {
     var file: ?*FILE = fopen(checkpoint, "rb");
     _ = &file;
     if (file == null) {
-        _ = fprintf(stderr, "Couldn't open file %s\n", checkpoint);
-        exit(@as(c_int, 1));
+        std.debug.print("Couldn't open file {s}\n", .{checkpoint});
+        unreachable;
     }
     if (fread(@as(?*anyopaque, @ptrCast(config)), @sizeOf(transformer.Config), @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1)))), file) != @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1))))) {
         exit(@as(c_int, 1));
@@ -1787,9 +1718,12 @@ pub fn read_checkpoint(arg_checkpoint: [*c]const u8, arg_config: [*c]transformer
 
     std.debug.print("config: {}\n", .{config.*});
 
-    var shared_weights: c_int = if (config.*.vocab_size > @as(c_int, 0)) @as(c_int, 1) else @as(c_int, 0);
-    _ = &shared_weights;
-    config.*.vocab_size = abs(config.*.vocab_size);
+
+    const shared_weights: bool = config.*.vocab_size > 0; // FIXME
+
+    // config.*.vocab_size = abs(config.*.vocab_size); // NOOP
+    std.debug.assert(@as(i32, @bitCast(config.*.vocab_size)) > 0);
+
     _ = fseek(file, @as(c_long, @bitCast(@as(c_long, @as(c_int, 0)))), @as(c_int, 2));
     file_size.* = ftell(file);
     _ = fclose(file);
@@ -1816,20 +1750,17 @@ fn time_in_ms() c_long {
     return (time_1.tv_sec * @as(__time_t, @bitCast(@as(c_long, @as(c_int, 1000))))) + @divTrunc(time_1.tv_nsec, @as(__syscall_slong_t, @bitCast(@as(c_long, @as(c_int, 1000000)))));
 }
 
-pub fn generate(arg_transformer: [*c]transformer.Transformer, arg_tokenizer: [*c]tokenizer.Tokenizer, arg_sampler: [*c]sample.Sampler, arg_prompt: [*c]const u8, arg_steps: c_int) void {
+pub fn generate(arg_transformer: *transformer.Transformer, arg_tokenizer: [*c]tokenizer.Tokenizer, arg_sampler: [*c]sample.Sampler, arg_prompt: [*c]const u8, steps: usize) void {
     var sampler = arg_sampler;
     _ = &sampler;
     var prompt = arg_prompt;
     _ = &prompt;
-    var steps = arg_steps;
-    _ = &steps;
     var empty_prompt: [*c]u8 = @as([*c]u8, @ptrCast(@volatileCast(@constCast(""))));
     _ = &empty_prompt;
     if (prompt == @as([*c]u8, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0))))))) {
         prompt = empty_prompt;
     }
-    var num_prompt_tokens: c_int = 0;
-    _ = &num_prompt_tokens;
+    var num_prompt_tokens: usize = 0;
     var prompt_tokens: [*c]c_int = @as([*c]c_int, @ptrCast(@alignCast(malloc((strlen(prompt) +% @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 3))))) *% @sizeOf(c_int)))));
     _ = &prompt_tokens;
     tokenizer.encode(arg_tokenizer, prompt, @as(i8, @bitCast(@as(i8, @truncate(@as(c_int, 1))))), @as(i8, @bitCast(@as(i8, @truncate(@as(c_int, 0))))), prompt_tokens, &num_prompt_tokens);
@@ -1839,25 +1770,25 @@ pub fn generate(arg_transformer: [*c]transformer.Transformer, arg_tokenizer: [*c
     }
     var start: c_long = 0;
     _ = &start;
-    var next: c_int = undefined;
+    var next: u16 = undefined;
     _ = &next;
-    var token: c_int = prompt_tokens[@as(c_uint, @intCast(@as(c_int, 0)))];
+    var token: u16 = @intCast(prompt_tokens[@as(c_uint, @intCast(@as(c_int, 0)))]);
     _ = &token;
-    var pos: c_int = 0;
+    var pos: usize = 0;
     _ = &pos;
     while (pos < steps) {
         var logits: [*c]f32 = transformer.forward(arg_transformer, token, pos);
         _ = &logits;
-        if (pos < (num_prompt_tokens - @as(c_int, 1))) {
-            next = (blk: {
-                const tmp = pos + @as(c_int, 1);
+        if (pos < num_prompt_tokens - 1) {
+            next = @intCast((blk: {
+                const tmp = pos + 1;
                 if (tmp >= 0) break :blk prompt_tokens + @as(usize, @intCast(tmp)) else break :blk prompt_tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*;
+            }).*);
         } else {
             next = sample.sample(sampler, logits);
         }
         pos += 1;
-        if (next == @as(c_int, 1)) {
+        if (next == 1) {
             break;
         }
         var piece: [*c]u8 = tokenizer.decode(arg_tokenizer, token, next);

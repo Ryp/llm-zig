@@ -1,28 +1,31 @@
 const llama = @import("llama.zig");
 
 pub const TokenIndex = extern struct {
-    str: [*c]u8 = @import("std").mem.zeroes([*c]u8),
-    id: c_int = @import("std").mem.zeroes(c_int),
+    str: [*c]u8,
+    id: c_int,
 };
+
 pub const Tokenizer = extern struct {
     vocab: [*c][*c]u8 = @import("std").mem.zeroes([*c][*c]u8),
     vocab_scores: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    sorted_vocab: [*c]TokenIndex = @import("std").mem.zeroes([*c]TokenIndex),
+    sorted_vocab: [*c]TokenIndex,
     vocab_size: c_int = @import("std").mem.zeroes(c_int),
     max_token_length: c_uint = @import("std").mem.zeroes(c_uint),
     byte_pieces: [512]u8 = @import("std").mem.zeroes([512]u8),
 };
-pub export fn compare_tokens(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_int {
+
+export fn compare_tokens(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_int {
     const a: *const TokenIndex = @alignCast(@ptrCast(arg_a));
     const b: *const TokenIndex = @alignCast(@ptrCast(arg_b));
     return llama.strcmp(a.str, b.str);
 }
-pub fn build_tokenizer(arg_t: [*c]Tokenizer, arg_tokenizer_path: [*c]u8, arg_vocab_size: c_int) void {
+
+pub fn build_tokenizer(arg_t: [*c]Tokenizer, arg_tokenizer_path: [*c]u8, arg_vocab_size: usize) void {
     var t = arg_t;
     _ = &t;
     var tokenizer_path = arg_tokenizer_path;
     _ = &tokenizer_path;
-    var vocab_size = arg_vocab_size;
+    var vocab_size: c_int = @intCast(arg_vocab_size);
     _ = &vocab_size;
     t.*.vocab_size = vocab_size;
     t.*.vocab = @as([*c][*c]u8, @ptrCast(@alignCast(llama.malloc(@as(c_ulong, @bitCast(@as(c_long, vocab_size))) *% @sizeOf([*c]u8)))));
@@ -102,13 +105,11 @@ pub fn free_tokenizer(arg_t: [*c]Tokenizer) void {
     llama.free(@as(?*anyopaque, @ptrCast(t.*.vocab_scores)));
     llama.free(@as(?*anyopaque, @ptrCast(t.*.sorted_vocab)));
 }
-pub fn decode(arg_t: [*c]Tokenizer, arg_prev_token: c_int, arg_token: c_int) [*c]u8 {
+pub fn decode(arg_t: [*c]Tokenizer, arg_prev_token: c_int, token: c_int) [*c]u8 {
     var t = arg_t;
     _ = &t;
     var prev_token = arg_prev_token;
     _ = &prev_token;
-    var token = arg_token;
-    _ = &token;
     var piece: [*c]u8 = (blk: {
         const tmp = token;
         if (tmp >= 0) break :blk t.*.vocab + @as(usize, @intCast(tmp)) else break :blk t.*.vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
@@ -124,6 +125,7 @@ pub fn decode(arg_t: [*c]Tokenizer, arg_prev_token: c_int, arg_token: c_int) [*c
     }
     return piece;
 }
+
 pub fn safe_printf(arg_piece: [*c]u8) void {
     var piece = arg_piece;
     _ = &piece;
@@ -148,7 +150,8 @@ pub fn safe_printf(arg_piece: [*c]u8) void {
     }
     _ = llama.printf("%s", piece);
 }
-pub fn str_lookup(arg_str: [*c]u8, arg_sorted_vocab: [*c]TokenIndex, arg_vocab_size: c_int) c_int {
+
+fn str_lookup(arg_str: [*c]u8, arg_sorted_vocab: [*c]TokenIndex, arg_vocab_size: c_int) c_int {
     var str = arg_str;
     _ = &str;
     var sorted_vocab = arg_sorted_vocab;
@@ -164,7 +167,8 @@ pub fn str_lookup(arg_str: [*c]u8, arg_sorted_vocab: [*c]TokenIndex, arg_vocab_s
     _ = &res;
     return if (res != @as([*c]TokenIndex, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0))))))) res.*.id else -@as(c_int, 1);
 }
-pub fn encode(arg_t: [*c]Tokenizer, arg_text: [*c]const u8, arg_bos: i8, arg_eos: i8, arg_tokens: [*c]c_int, arg_n_tokens: [*c]c_int) void {
+
+pub fn encode(arg_t: [*c]Tokenizer, arg_text: [*c]const u8, arg_bos: i8, arg_eos: i8, arg_tokens: [*c]c_int, arg_n_tokens: *usize) void {
     var t = arg_t;
     _ = &t;
     var text = arg_text;

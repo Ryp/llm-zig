@@ -1,46 +1,61 @@
 const llama = @import("llama.zig");
 
 pub const Config = extern struct {
-    dim: c_int,
-    hidden_dim: c_int,
-    n_layers: c_int,
-    n_heads: c_int,
-    n_kv_heads: c_int,
-    vocab_size: c_int,
-    seq_len: c_int,
+    dim: u32,
+    hidden_dim: u32,
+    n_layers: u32,
+    n_heads: u32,
+    n_kv_heads: u32,
+    vocab_size: u32,
+    seq_len: u32,
 };
 
 pub const Transformer = extern struct {
-    config: Config = @import("std").mem.zeroes(Config),
-    weights: llama.TransformerWeights = @import("std").mem.zeroes(llama.TransformerWeights),
-    state: llama.RunState = @import("std").mem.zeroes(llama.RunState),
-    fd: c_int = @import("std").mem.zeroes(c_int),
-    data: [*c]f32 = @import("std").mem.zeroes([*c]f32),
-    file_size: isize = @import("std").mem.zeroes(isize),
+    config: Config,
+    weights: llama.TransformerWeights,
+    state: RunState,
+    fd: c_int,
+    data: [*]f32,
+    file_size: isize,
 };
 
-pub fn build_transformer(arg_t: [*c]Transformer, arg_checkpoint_path: [*c]const u8) void {
+pub const RunState = extern struct {
+    x: [*]f32,
+    xb: [*]f32,
+    xb2: [*]f32,
+    hb: [*]f32,
+    hb2: [*]f32,
+    q: [*]f32,
+    k: [*]f32,
+    v: [*]f32,
+    att: [*]f32,
+    logits: [*]f32,
+    key_cache: [*]f32,
+    value_cache: [*]f32,
+};
+
+pub fn build_transformer(arg_t: *Transformer, arg_checkpoint_path: [:0]const u8) void {
     var t = arg_t;
     _ = &t;
     var checkpoint_path = arg_checkpoint_path;
     _ = &checkpoint_path;
-    llama.read_checkpoint(checkpoint_path, &t.*.config, &t.*.weights, &t.*.fd, &t.*.data, &t.*.file_size);
-    llama.malloc_run_state(&t.*.state, &t.*.config);
+    llama.read_checkpoint(checkpoint_path, &t.config, &t.weights, &t.fd, &t.data, &t.file_size);
+    malloc_run_state(&t.state, t.config);
 }
 
-pub fn free_transformer(arg_t: [*c]Transformer) void {
+pub fn free_transformer(arg_t: *Transformer) void {
     var t = arg_t;
     _ = &t;
     //if (t.*.data != @as([*c]f32, @ptrCast(@as(?*anyopaque, @ptrFromInt(@as(usize, 0) -% 1))))) {
-        _ = llama.munmap(@as(?*anyopaque, @ptrCast(t.*.data)), @as(usize, @bitCast(t.*.file_size)));
+        _ = llama.munmap(@as(?*anyopaque, @ptrCast(t.data)), @as(usize, @bitCast(t.file_size)));
     //}
-    if (t.*.fd != -@as(c_int, 1)) {
-        _ = llama.close(t.*.fd);
+    if (t.fd != -@as(c_int, 1)) {
+        _ = llama.close(t.fd);
     }
-    llama.free_run_state(&t.*.state);
+    free_run_state(&t.state);
 }
 
-pub fn rmsnorm(arg_o: [*c]f32, arg_x: [*c]f32, arg_weight: [*c]f32, arg_size: c_int) void {
+pub fn rmsnorm(arg_o: [*c]f32, arg_x: [*c]f32, arg_weight: [*c]f32, arg_size: usize) void {
     var o = arg_o;
     _ = &o;
     var x = arg_x;
@@ -65,7 +80,7 @@ pub fn rmsnorm(arg_o: [*c]f32, arg_x: [*c]f32, arg_weight: [*c]f32, arg_size: c_
         }
     }
     ss /= @as(f32, @floatFromInt(size));
-    ss += 0.000009999999747378752;
+    ss += 0.00001;
     ss = 1.0 / llama.sqrtf(ss);
     {
         var j: c_int = 0;
@@ -85,11 +100,9 @@ pub fn rmsnorm(arg_o: [*c]f32, arg_x: [*c]f32, arg_weight: [*c]f32, arg_size: c_
     }
 }
 
-pub fn softmax(arg_x: [*c]f32, arg_size: c_int) void {
+pub fn softmax(arg_x: [*c]f32, size: usize) void {
     var x = arg_x;
     _ = &x;
-    var size = arg_size;
-    _ = &size;
     var max_val: f32 = x[@as(c_uint, @intCast(@as(c_int, 0)))];
     _ = &max_val;
     {
@@ -138,252 +151,190 @@ pub fn softmax(arg_x: [*c]f32, arg_size: c_int) void {
     }
 }
 
-pub fn matmul(arg_xout: [*c]f32, arg_x: [*c]f32, arg_w: [*c]f32, arg_n: c_int, arg_d: c_int) void {
-    var xout = arg_xout;
-    _ = &xout;
-    var x = arg_x;
-    _ = &x;
-    var w = arg_w;
-    _ = &w;
-    var n = arg_n;
-    _ = &n;
-    var d = arg_d;
-    _ = &d;
-    var i: c_int = undefined;
-    _ = &i;
-    {
-        i = 0;
-        while (i < d) : (i += 1) {
-            var val: f32 = 0.0;
-            _ = &val;
-            {
-                var j: c_int = 0;
-                _ = &j;
-                while (j < n) : (j += 1) {
-                    val += (blk: {
-                        const tmp = (i * n) + j;
-                        if (tmp >= 0) break :blk w + @as(usize, @intCast(tmp)) else break :blk w - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).* * (blk: {
-                        const tmp = j;
-                        if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
-                }
-            }
-            (blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk xout + @as(usize, @intCast(tmp)) else break :blk xout - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* = val;
+pub fn matmul(xout: [*c]f32, x: [*c]f32, w: [*c]f32, n: usize, d: usize) void {
+    for (0..d) |i| {
+        var val: f32 = 0.0;
+
+        for (0..n) |j| {
+            val += (blk: {
+                const tmp = (i * n) + j;
+                if (tmp >= 0) break :blk w + @as(usize, @intCast(tmp)) else break :blk w - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
+            }).* * (blk: {
+                const tmp = j;
+                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
+            }).*;
         }
+
+        (blk: {
+            const tmp = i;
+            if (tmp >= 0) break :blk xout + @as(usize, @intCast(tmp)) else break :blk xout - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
+        }).* = val;
     }
 }
 
-pub fn forward(arg_transformer: [*c]Transformer, arg_token: c_int, arg_pos: c_int) [*c]f32 {
-    var transformer = arg_transformer;
-    _ = &transformer;
-    var token = arg_token;
-    _ = &token;
-    var pos = arg_pos;
-    _ = &pos;
-    var p: [*c]Config = &transformer.*.config;
-    _ = &p;
-    var w: [*c]llama.TransformerWeights = &transformer.*.weights;
-    _ = &w;
-    var s: [*c]llama.RunState = &transformer.*.state;
-    _ = &s;
-    var x: [*c]f32 = s.*.x;
-    _ = &x;
-    var dim: c_int = p.*.dim;
-    _ = &dim;
-    var kv_dim: c_int = @divTrunc(p.*.dim * p.*.n_kv_heads, p.*.n_heads);
-    _ = &kv_dim;
-    var kv_mul: c_int = @divTrunc(p.*.n_heads, p.*.n_kv_heads);
-    _ = &kv_mul;
-    var hidden_dim: c_int = p.*.hidden_dim;
-    _ = &hidden_dim;
-    var head_size: c_int = @divTrunc(dim, p.*.n_heads);
-    _ = &head_size;
-    var content_row: [*c]f32 = w.*.token_embedding_table + @as(usize, @bitCast(@as(isize, @intCast(token * dim))));
-    _ = &content_row;
-    _ = llama.memcpy(@as(?*anyopaque, @ptrCast(x)), @as(?*const anyopaque, @ptrCast(content_row)), @as(c_ulong, @bitCast(@as(c_long, dim))) *% @sizeOf(f32));
+pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) [*]f32 {
+    const p = arg_transformer.config;
+    const w = arg_transformer.weights;
+    const s = &arg_transformer.state;
+
+    const x = s.x;
+
+    const dim = p.dim;
+    const kv_dim = (p.dim * p.n_kv_heads) / p.n_heads;
+    const kv_mul = p.n_heads / p.n_kv_heads; // integer multiplier of the kv sharing in multiquery
+    const head_size = dim / p.n_heads;
+
+    // copy the token embedding into x
+    const content_row: [*]f32 = w.token_embedding_table + token * dim;
+
+    _ = llama.memcpy(x, content_row, dim * @sizeOf(f32));
+
+    // forward all the layers
+    for (0..p.n_layers) |layer_index|
     {
-        var l: c_ulonglong = 0;
-        _ = &l;
-        while (l < @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.n_layers)))) : (l +%= 1) {
-            rmsnorm(s.*.xb, x, w.*.rms_att_weight + (l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))), dim);
-            var loff: c_int = @as(c_int, @bitCast(@as(c_uint, @truncate((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, p.*.seq_len)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, kv_dim)))))));
-            _ = &loff;
-            s.*.k = (s.*.key_cache + @as(usize, @bitCast(@as(isize, @intCast(loff))))) + @as(usize, @bitCast(@as(isize, @intCast(pos * kv_dim))));
-            s.*.v = (s.*.value_cache + @as(usize, @bitCast(@as(isize, @intCast(loff))))) + @as(usize, @bitCast(@as(isize, @intCast(pos * kv_dim))));
-            matmul(s.*.q, s.*.xb, w.*.wq + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))), dim, dim);
-            matmul(s.*.k, s.*.xb, w.*.wk + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, kv_dim)))), dim, kv_dim);
-            matmul(s.*.v, s.*.xb, w.*.wv + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, kv_dim)))), dim, kv_dim);
-            {
-                var i: c_int = 0;
-                _ = &i;
-                while (i < dim) : (i += @as(c_int, 2)) {
-                    var head_dim: c_int = @import("std").zig.c_translation.signedRemainder(i, head_size);
-                    _ = &head_dim;
-                    var freq: f32 = 1.0 / llama.powf(10000.0, @as(f32, @floatFromInt(head_dim)) / @as(f32, @floatFromInt(head_size)));
-                    _ = &freq;
-                    var val: f32 = @as(f32, @floatFromInt(pos)) * freq;
-                    _ = &val;
-                    var fcr: f32 = llama.cosf(val);
-                    _ = &fcr;
-                    var fci: f32 = llama.sinf(val);
-                    _ = &fci;
-                    var rotn: c_int = if (i < kv_dim) @as(c_int, 2) else @as(c_int, 1);
-                    _ = &rotn;
-                    {
-                        var v: c_int = 0;
-                        _ = &v;
-                        while (v < rotn) : (v += 1) {
-                            var vec: [*c]f32 = if (v == @as(c_int, 0)) s.*.q else s.*.k;
-                            _ = &vec;
-                            var v0: f32 = (blk: {
-                                const tmp = i;
-                                if (tmp >= 0) break :blk vec + @as(usize, @intCast(tmp)) else break :blk vec - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).*;
-                            _ = &v0;
-                            var v1: f32 = (blk: {
-                                const tmp = i + @as(c_int, 1);
-                                if (tmp >= 0) break :blk vec + @as(usize, @intCast(tmp)) else break :blk vec - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).*;
-                            _ = &v1;
-                            (blk: {
-                                const tmp = i;
-                                if (tmp >= 0) break :blk vec + @as(usize, @intCast(tmp)) else break :blk vec - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).* = (v0 * fcr) - (v1 * fci);
-                            (blk: {
-                                const tmp = i + @as(c_int, 1);
-                                if (tmp >= 0) break :blk vec + @as(usize, @intCast(tmp)) else break :blk vec - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).* = (v0 * fci) + (v1 * fcr);
-                        }
-                    }
-                }
+        // attention rmsnorm
+        rmsnorm(s.xb, x, w.rms_att_weight + layer_index * dim, dim);
+
+        // key and value point to the kv cache
+        const layer_kv_offset = layer_index * p.seq_len * kv_dim; // kv cache layer offset for convenience
+        s.k = s.key_cache + layer_kv_offset + pos * kv_dim;
+        s.v = s.value_cache + layer_kv_offset + pos * kv_dim;
+
+        // qkv matmuls for this position
+        matmul(s.q, s.xb, w.wq + layer_index * p.dim * p.dim, dim, dim);
+        matmul(s.k, s.xb, w.wk + layer_index * p.dim * kv_dim, dim, kv_dim);
+        matmul(s.v, s.xb, w.wv + layer_index * p.dim * kv_dim, dim, kv_dim);
+
+        // RoPE relative positional encoding: complex-valued rotate q and k in each head
+        {
+        var i: usize = 0;
+        while (i < dim) : (i += @as(c_int, 2)) {
+            const head_dim = i % head_size;
+            const freq = 1.0 / llama.powf(10000.0, @as(f32,@floatFromInt(head_dim)) / @as(f32,@floatFromInt(head_size)));
+            const val = freq * @as(f32, @floatFromInt(pos));
+            const fcr = llama.cosf(val);
+            const fci = llama.sinf(val);
+            const rotn: usize = if (i < kv_dim) 2 else 1; // how many vectors? 2 = q & k, 1 = q only
+            for(0..rotn) |v| {
+                const vec = if (v == 0) s.q else s.k; // the vector to rotate (query or key)
+                const v0 = vec[i];
+                const v1 = vec[i+1];
+
+                vec[i]   = v0 * fcr - v1 * fci;
+                vec[i+1] = v0 * fci + v1 * fcr;
             }
-            var h: c_int = undefined;
-            _ = &h;
-            {
-                h = 0;
-                while (h < p.*.n_heads) : (h += 1) {
-                    var q: [*c]f32 = s.*.q + @as(usize, @bitCast(@as(isize, @intCast(h * head_size))));
-                    _ = &q;
-                    var att: [*c]f32 = s.*.att + @as(usize, @bitCast(@as(isize, @intCast(h * p.*.seq_len))));
-                    _ = &att;
-                    {
-                        var t: c_int = 0;
-                        _ = &t;
-                        while (t <= pos) : (t += 1) {
-                            var k: [*c]f32 = ((s.*.key_cache + @as(usize, @bitCast(@as(isize, @intCast(loff))))) + @as(usize, @bitCast(@as(isize, @intCast(t * kv_dim))))) + @as(usize, @bitCast(@as(isize, @intCast(@divTrunc(h, kv_mul) * head_size))));
-                            _ = &k;
-                            var score: f32 = 0.0;
-                            _ = &score;
-                            {
-                                var i: c_int = 0;
-                                _ = &i;
-                                while (i < head_size) : (i += 1) {
-                                    score += (blk: {
-                                        const tmp = i;
-                                        if (tmp >= 0) break :blk q + @as(usize, @intCast(tmp)) else break :blk q - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                                    }).* * (blk: {
-                                        const tmp = i;
-                                        if (tmp >= 0) break :blk k + @as(usize, @intCast(tmp)) else break :blk k - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                                    }).*;
-                                }
-                            }
-                            score /= llama.sqrtf(@as(f32, @floatFromInt(head_size)));
-                            (blk: {
-                                const tmp = t;
-                                if (tmp >= 0) break :blk att + @as(usize, @intCast(tmp)) else break :blk att - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).* = score;
-                        }
-                    }
-                    softmax(att, pos + @as(c_int, 1));
-                    var xb: [*c]f32 = s.*.xb + @as(usize, @bitCast(@as(isize, @intCast(h * head_size))));
-                    _ = &xb;
-                    _ = llama.memset(@as(?*anyopaque, @ptrCast(xb)), @as(c_int, 0), @as(c_ulong, @bitCast(@as(c_long, head_size))) *% @sizeOf(f32));
-                    {
-                        var t: c_int = 0;
-                        _ = &t;
-                        while (t <= pos) : (t += 1) {
-                            var v: [*c]f32 = ((s.*.value_cache + @as(usize, @bitCast(@as(isize, @intCast(loff))))) + @as(usize, @bitCast(@as(isize, @intCast(t * kv_dim))))) + @as(usize, @bitCast(@as(isize, @intCast(@divTrunc(h, kv_mul) * head_size))));
-                            _ = &v;
-                            var a: f32 = (blk: {
-                                const tmp = t;
-                                if (tmp >= 0) break :blk att + @as(usize, @intCast(tmp)) else break :blk att - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                            }).*;
-                            _ = &a;
-                            {
-                                var i: c_int = 0;
-                                _ = &i;
-                                while (i < head_size) : (i += 1) {
-                                    (blk: {
-                                        const tmp = i;
-                                        if (tmp >= 0) break :blk xb + @as(usize, @intCast(tmp)) else break :blk xb - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                                    }).* += a * (blk: {
-                                        const tmp = i;
-                                        if (tmp >= 0) break :blk v + @as(usize, @intCast(tmp)) else break :blk v - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                                    }).*;
-                                }
-                            }
-                        }
-                    }
+        }
+        }
+
+        // multihead attention. iterate over all heads
+        for (0..p.n_heads) |h| {
+            // get the query vector for this head
+            const q = s.q + h * head_size;
+            // attention scores for this head
+            const att = s.att + h * p.seq_len;
+            // iterate over all timesteps, including the current one
+            for (0..pos + 1) |t| {
+                // get the key vector for this head and at this timestep
+                const k = s.key_cache + layer_kv_offset + t * kv_dim + (h / kv_mul) * head_size;
+                // calculate the attention score as the dot product of q and k
+                var score: f32 = 0.0;
+                for (0..head_size) |i| {
+                    score += q[i] * k[i];
                 }
+                score *= 1.0 / llama.sqrtf(@floatFromInt(head_size));
+                // save the score to the attention buffer
+                att[t] = score;
             }
-            matmul(s.*.xb2, s.*.xb, w.*.wo + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))), dim, dim);
-            {
-                var i: c_int = 0;
-                _ = &i;
-                while (i < dim) : (i += 1) {
-                    (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).* += (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk s.*.xb2 + @as(usize, @intCast(tmp)) else break :blk s.*.xb2 - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
-                }
-            }
-            rmsnorm(s.*.xb, x, w.*.rms_ffn_weight + (l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))), dim);
-            matmul(s.*.hb, s.*.xb, w.*.w1 + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, hidden_dim)))), dim, hidden_dim);
-            matmul(s.*.hb2, s.*.xb, w.*.w3 + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, hidden_dim)))), dim, hidden_dim);
-            {
-                var i: c_int = 0;
-                _ = &i;
-                while (i < hidden_dim) : (i += 1) {
-                    var val: f32 = (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk s.*.hb + @as(usize, @intCast(tmp)) else break :blk s.*.hb - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
-                    _ = &val;
-                    val *= 1.0 / (1.0 + llama.expf(-val));
-                    val *= (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk s.*.hb2 + @as(usize, @intCast(tmp)) else break :blk s.*.hb2 - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
-                    (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk s.*.hb + @as(usize, @intCast(tmp)) else break :blk s.*.hb - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).* = val;
-                }
-            }
-            matmul(s.*.xb, s.*.hb, w.*.w2 + ((l *% @as(c_ulonglong, @bitCast(@as(c_longlong, dim)))) *% @as(c_ulonglong, @bitCast(@as(c_longlong, hidden_dim)))), hidden_dim, dim);
-            {
-                var i: c_int = 0;
-                _ = &i;
-                while (i < dim) : (i += 1) {
-                    (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).* += (blk: {
-                        const tmp = i;
-                        if (tmp >= 0) break :blk s.*.xb + @as(usize, @intCast(tmp)) else break :blk s.*.xb - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
+
+            // softmax the scores to get attention weights, from 0..pos inclusively
+            softmax(att, pos + 1);
+
+            // weighted sum of the values, store back into xb
+            const xb = s.xb + h * head_size;
+
+            _ = llama.memset(xb, 0, head_size * @sizeOf(f32));
+
+            for (0..pos + 1) |t| {
+                // get the value vector for this head and at this timestep
+                const v = s.value_cache + layer_kv_offset + t * kv_dim + (h / kv_mul) * head_size;
+                // get the attention weight for this timestep
+                const a = att[t];
+                // accumulate the weighted value into xb
+                for (0..head_size) |i| {
+                    xb[i] += a * v[i];
                 }
             }
         }
+
+        // final matmul to get the output of the attention
+        matmul(s.xb2, s.xb, w.wo + layer_index * dim * dim, dim, dim);
+
+        // residual connection back into x
+        for (0..dim) |i| {
+            x[i] += s.xb2[i];
+        }
+
+        // ffn rmsnorm
+        rmsnorm(s.xb, x, w.rms_ffn_weight + layer_index * dim, dim);
+
+        // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
+        // first calculate self.w1(x) and self.w3(x)
+        matmul(s.hb, s.xb, w.w1 + layer_index * dim * p.hidden_dim, dim, p.hidden_dim);
+        matmul(s.hb2, s.xb, w.w3 + layer_index * dim * p.hidden_dim, dim, p.hidden_dim);
+
+        // SwiGLU non-linearity
+        for (0..p.hidden_dim) |i| {
+            var val = s.hb[i];
+            // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
+            val *= (1.0 / (1.0 + llama.expf(-val)));
+            // elementwise multiply with w3(x)
+            val *= s.hb2[i];
+            s.hb[i] = val;
+        }
+
+        // final matmul to get the output of the ffn
+        matmul(s.xb, s.hb, w.w2 + layer_index * dim * p.hidden_dim, p.hidden_dim, dim);
+
+        // residual connection
+        for (0..dim) |i| {
+            x[i] += s.xb[i];
+        }
     }
-    rmsnorm(x, x, w.*.rms_final_weight, dim);
-    matmul(s.*.logits, x, w.*.wcls, p.*.dim, p.*.vocab_size);
-    return s.*.logits;
+
+    // final rmsnorm
+    rmsnorm(x, x, w.rms_final_weight, dim);
+
+    // classifier into logits
+    matmul(s.logits, x, w.wcls, p.dim, p.vocab_size);
+    return s.logits;
+}
+
+pub fn malloc_run_state(s: *RunState, p: Config) void {
+    var kv_dim: usize = @divTrunc(p.dim * p.n_kv_heads, p.n_heads);
+    _ = &kv_dim;
+
+    s.x = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.dim, @sizeOf(f32)))));
+    s.xb = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.dim, @sizeOf(f32)))));
+    s.xb2 = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.dim, @sizeOf(f32)))));
+    s.hb = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.hidden_dim, @sizeOf(f32)))));
+    s.hb2 = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.hidden_dim, @sizeOf(f32)))));
+    s.q = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.dim, @sizeOf(f32)))));
+    s.key_cache = @as([*]f32, @ptrCast(@alignCast(llama.calloc((p.n_layers * p.seq_len) * kv_dim, @sizeOf(f32)))));
+    s.value_cache = @as([*]f32, @ptrCast(@alignCast(llama.calloc((p.n_layers * p.seq_len) * kv_dim, @sizeOf(f32)))));
+    s.att = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.n_heads * p.seq_len, @sizeOf(f32)))));
+    s.logits = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.vocab_size, @sizeOf(f32)))));
+    // FIXME error handling
+}
+
+pub fn free_run_state(s: *RunState) void {
+    llama.free(@as(?*anyopaque, @ptrCast(s.x)));
+    llama.free(@as(?*anyopaque, @ptrCast(s.xb)));
+    llama.free(@as(?*anyopaque, @ptrCast(s.xb2)));
+    llama.free(@as(?*anyopaque, @ptrCast(s.hb)));
+    llama.free(@as(?*anyopaque, @ptrCast(s.hb2)));
+    llama.free(@as(?*anyopaque, @ptrCast(s.q)));
+    llama.free(@as(?*anyopaque, @ptrCast(s.att)));
+    llama.free(@as(?*anyopaque, @ptrCast(s.logits)));
+    llama.free(@as(?*anyopaque, @ptrCast(s.key_cache)));
+    llama.free(@as(?*anyopaque, @ptrCast(s.value_cache)));
 }

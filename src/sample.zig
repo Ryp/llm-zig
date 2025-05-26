@@ -4,28 +4,26 @@ const transformer = @import("transformer.zig");
 
 pub const ProbIndex = extern struct {
     prob: f32 = 0,
-    index: c_int = 0,
+    index: usize = 0,
 };
 
 pub const Sampler = extern struct {
-    vocab_size: c_int = 0,
+    vocab_size: usize = 0,
     probindex: [*c]ProbIndex = @import("std").mem.zeroes([*c]ProbIndex),
     temperature: f32 = @import("std").mem.zeroes(f32),
     topp: f32 = @import("std").mem.zeroes(f32),
     rng_state: c_ulonglong = @import("std").mem.zeroes(c_ulonglong),
 };
 
-fn sample_argmax(arg_probabilities: [*c]f32, arg_n: c_int) c_int {
+fn sample_argmax(arg_probabilities: [*c]f32, n: usize) usize {
     var probabilities = arg_probabilities;
     _ = &probabilities;
-    var n = arg_n;
-    _ = &n;
-    var max_i: c_int = 0;
+    var max_i: usize = 0;
     _ = &max_i;
     var max_p: f32 = probabilities[@as(c_uint, @intCast(@as(c_int, 0)))];
     _ = &max_p;
     {
-        var i: c_int = 1;
+        var i: usize = 1;
         _ = &i;
         while (i < n) : (i += 1) {
             if ((blk: {
@@ -43,7 +41,7 @@ fn sample_argmax(arg_probabilities: [*c]f32, arg_n: c_int) c_int {
     return max_i;
 }
 
-fn sample_mult(arg_probabilities: [*c]f32, arg_n: c_int, arg_coin: f32) c_int {
+fn sample_mult(arg_probabilities: [*c]f32, arg_n: usize, arg_coin: f32) usize {
     var probabilities = arg_probabilities;
     _ = &probabilities;
     var n = arg_n;
@@ -52,8 +50,9 @@ fn sample_mult(arg_probabilities: [*c]f32, arg_n: c_int, arg_coin: f32) c_int {
     _ = &coin;
     var cdf: f32 = 0.0;
     _ = &cdf;
+
     {
-        var i: c_int = 0;
+        var i: usize = 0;
         _ = &i;
         while (i < n) : (i += 1) {
             cdf += (blk: {
@@ -65,7 +64,8 @@ fn sample_mult(arg_probabilities: [*c]f32, arg_n: c_int, arg_coin: f32) c_int {
             }
         }
     }
-    return n - @as(c_int, 1);
+
+    return n - 1;
 }
 
 export fn compare(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_int {
@@ -82,7 +82,7 @@ export fn compare(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_int {
     return 0;
 }
 
-fn sample_topp(arg_probabilities: [*c]f32, arg_n: c_int, arg_topp: f32, arg_probindex: [*c]ProbIndex, arg_coin: f32) c_int {
+fn sample_topp(arg_probabilities: [*c]f32, arg_n: usize, arg_topp: f32, arg_probindex: [*c]ProbIndex, arg_coin: f32) usize {
     var probabilities = arg_probabilities;
     _ = &probabilities;
     var n = arg_n;
@@ -98,7 +98,7 @@ fn sample_topp(arg_probabilities: [*c]f32, arg_n: c_int, arg_topp: f32, arg_prob
     const cutoff: f32 = (1.0 - topp) / @as(f32, @floatFromInt(n - @as(c_int, 1)));
     _ = &cutoff;
     {
-        var i: c_int = 0;
+        var i: usize = 0;
         _ = &i;
         while (i < n) : (i += 1) {
             if ((blk: {
@@ -164,16 +164,16 @@ fn sample_topp(arg_probabilities: [*c]f32, arg_n: c_int, arg_topp: f32, arg_prob
         if (tmp >= 0) break :blk probindex + @as(usize, @intCast(tmp)) else break :blk probindex - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
     }).*.index;
 }
-pub fn build_sampler(sampler: [*c]Sampler, vocab_size: c_int, temperature: f32, topp: f32, rng_seed: c_ulonglong) void {
-    sampler.*.vocab_size = vocab_size;
-    sampler.*.temperature = temperature;
-    sampler.*.topp = topp;
-    sampler.*.rng_state = rng_seed;
-    sampler.*.probindex = @as([*c]ProbIndex, @ptrCast(@alignCast(llama.malloc(@as(c_ulong, @bitCast(@as(c_long, sampler.*.vocab_size))) *% @sizeOf(ProbIndex)))));
+pub fn build_sampler(sampler: *Sampler, vocab_size: usize, temperature: f32, topp: f32, rng_seed: c_ulonglong) void {
+    sampler.vocab_size = vocab_size;
+    sampler.temperature = temperature;
+    sampler.topp = topp;
+    sampler.rng_state = rng_seed;
+    sampler.probindex = @as([*c]ProbIndex, @ptrCast(@alignCast(llama.malloc(sampler.vocab_size * @sizeOf(ProbIndex)))));
 }
 
-pub fn free_sampler(sampler: [*c]Sampler) void {
-    llama.free(@as(?*anyopaque, @ptrCast(sampler.*.probindex)));
+pub fn free_sampler(sampler: *Sampler) void {
+    llama.free(@as(?*anyopaque, @ptrCast(sampler.probindex)));
 }
 
 fn random_u32(state: [*c]c_ulonglong) c_uint {
@@ -187,8 +187,8 @@ fn random_f32(state: [*c]c_ulonglong) f32 {
     return @as(f32, @floatFromInt(random_u32(state) >> @intCast(8))) / 16777216.0;
 }
 
-pub fn sample(sampler: [*c]Sampler, logits: [*c]f32) c_int {
-    var next: c_int = undefined;
+pub fn sample(sampler: [*c]Sampler, logits: [*c]f32) u16 {
+    var next: usize = undefined;
     _ = &next;
     if (sampler.*.temperature == 0.0) {
         next = sample_argmax(logits, sampler.*.vocab_size);
@@ -212,6 +212,6 @@ pub fn sample(sampler: [*c]Sampler, logits: [*c]f32) c_int {
             next = sample_topp(logits, sampler.*.vocab_size, sampler.*.topp, sampler.*.probindex, coin);
         }
     }
-    return next;
+    return @intCast(next);
 }
 

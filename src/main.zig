@@ -21,7 +21,7 @@ pub fn error_usage() void {
 }
 
 pub fn main() void {
-    const checkpoint_path: [*c]const u8 = "../stories15M.bin";
+    const checkpoint_path = "../stories15M.bin";
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -35,11 +35,10 @@ pub fn main() void {
     var temperature: f32 = 1.0;
     _ = &temperature;
 
-    var topp: f32 = 0.8999999761581421;
+    var topp: f32 = 0.9;
     _ = &topp;
 
-    var steps: c_int = 16;
-    _ = &steps;
+    var steps: usize = 16;
 
     const prompt: [*c]const u8 = "What does Claire like?"; // FIXME
     const rng_seed: c_ulonglong = 0; // FIXME
@@ -54,15 +53,11 @@ pub fn main() void {
         topp = @as(f32, @floatCast(0.9));
     }
 
-    if (steps < @as(c_int, 0)) {
-        steps = 0;
-    }
-
     var llama2_transformer: transformer.Transformer = undefined;
     transformer.build_transformer(&llama2_transformer, checkpoint_path);
     defer transformer.free_transformer(&llama2_transformer);
 
-    if ((steps == @as(c_int, 0)) or (steps > llama2_transformer.config.seq_len)) {
+    if (steps == 0 or steps > llama2_transformer.config.seq_len) {
         steps = llama2_transformer.config.seq_len;
     }
 
