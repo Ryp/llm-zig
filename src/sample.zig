@@ -120,7 +120,9 @@ fn sample_topp(arg_probabilities: [*c]f32, arg_n: usize, arg_topp: f32, arg_prob
             }
         }
     }
+
     llama.qsort(@as(?*anyopaque, @ptrCast(probindex)), @as(usize, @bitCast(@as(c_long, n0))), @sizeOf(ProbIndex), &compare);
+
     var cumulative_prob: f32 = 0.0;
     _ = &cumulative_prob;
     var last_idx: c_int = n0 - @as(c_int, 1);

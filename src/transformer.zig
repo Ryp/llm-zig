@@ -1,3 +1,4 @@
+const std = @import("std");
 const llama = @import("llama.zig");
 
 pub const Config = extern struct {
@@ -81,7 +82,7 @@ pub fn rmsnorm(arg_o: [*c]f32, arg_x: [*c]f32, arg_weight: [*c]f32, arg_size: us
     }
     ss /= @as(f32, @floatFromInt(size));
     ss += 0.00001;
-    ss = 1.0 / llama.sqrtf(ss);
+    ss = 1.0 / std.math.sqrt(ss);
     {
         var j: c_int = 0;
         _ = &j;
@@ -129,7 +130,7 @@ pub fn softmax(arg_x: [*c]f32, size: usize) void {
             (blk: {
                 const tmp = i;
                 if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* = llama.expf((blk: {
+            }).* = std.math.exp((blk: {
                 const tmp = i;
                 if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
             }).* - max_val);
@@ -210,10 +211,10 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) [*]f32 {
         var i: usize = 0;
         while (i < dim) : (i += @as(c_int, 2)) {
             const head_dim = i % head_size;
-            const freq = 1.0 / llama.powf(10000.0, @as(f32,@floatFromInt(head_dim)) / @as(f32,@floatFromInt(head_size)));
+            const freq = 1.0 / std.math.pow(f32, 10000.0, @as(f32,@floatFromInt(head_dim)) / @as(f32,@floatFromInt(head_size)));
             const val = freq * @as(f32, @floatFromInt(pos));
-            const fcr = llama.cosf(val);
-            const fci = llama.sinf(val);
+            const fcr = std.math.cos(val);
+            const fci = std.math.sin(val);
             const rotn: usize = if (i < kv_dim) 2 else 1; // how many vectors? 2 = q & k, 1 = q only
             for(0..rotn) |v| {
                 const vec = if (v == 0) s.q else s.k; // the vector to rotate (query or key)
@@ -241,7 +242,7 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) [*]f32 {
                 for (0..head_size) |i| {
                     score += q[i] * k[i];
                 }
-                score *= 1.0 / llama.sqrtf(@floatFromInt(head_size));
+                score *= 1.0 / std.math.sqrt(@as(f32, @floatFromInt(head_size)));
                 // save the score to the attention buffer
                 att[t] = score;
             }
@@ -286,7 +287,7 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) [*]f32 {
         for (0..p.hidden_dim) |i| {
             var val = s.hb[i];
             // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
-            val *= (1.0 / (1.0 + llama.expf(-val)));
+            val *= (1.0 / (1.0 + std.math.exp(-val)));
             // elementwise multiply with w3(x)
             val *= s.hb2[i];
             s.hb[i] = val;

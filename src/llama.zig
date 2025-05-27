@@ -1691,7 +1691,7 @@ pub fn memory_map_weights(w: [*c]TransformerWeights, p: [*c]transformer.Config, 
     w.*.wo = ptr;
     ptr += n_layers * p.*.n_heads * head_size * p.*.dim;
     w.*.rms_ffn_weight = ptr;
-    ptr += n_layers *  p.*.dim;
+    ptr += n_layers * p.*.dim;
     w.*.w1 = ptr;
     ptr += n_layers * p.*.dim * p.*.hidden_dim;
     w.*.w2 = ptr;
@@ -1717,7 +1717,6 @@ pub fn read_checkpoint(checkpoint: [:0]const u8, config: [*c]transformer.Config,
     }
 
     std.debug.print("config: {}\n", .{config.*});
-
 
     const shared_weights: bool = config.*.vocab_size > 0; // FIXME
 
