@@ -1702,6 +1702,7 @@ pub fn memory_map_weights(w: [*c]TransformerWeights, p: [*c]transformer.Config, 
     ptr += p.*.dim;
     ptr += @divTrunc(p.*.seq_len * head_size, 2);
     ptr += @divTrunc(p.*.seq_len * head_size, 2);
+
     w.*.wcls = if (shared_weights) w.*.token_embedding_table else ptr;
 }
 
@@ -1776,8 +1777,7 @@ pub fn generate(arg_transformer: *transformer.Transformer, arg_tokenizer: [*c]to
     var pos: usize = 0;
     _ = &pos;
     while (pos < steps) {
-        var logits: [*c]f32 = transformer.forward(arg_transformer, token, pos);
-        _ = &logits;
+        const logits = transformer.forward(arg_transformer, token, pos);
         if (pos < num_prompt_tokens - 1) {
             next = @intCast((blk: {
                 const tmp = pos + 1;

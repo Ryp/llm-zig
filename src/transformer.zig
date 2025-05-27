@@ -11,7 +11,7 @@ pub const Config = extern struct {
     seq_len: u32,
 };
 
-pub const Transformer = extern struct {
+pub const Transformer = struct {
     config: Config,
     weights: llama.TransformerWeights,
     state: RunState,
@@ -20,160 +20,94 @@ pub const Transformer = extern struct {
     file_size: isize,
 };
 
-pub const RunState = extern struct {
-    x: [*]f32,
-    xb: [*]f32,
-    xb2: [*]f32,
-    hb: [*]f32,
-    hb2: [*]f32,
-    q: [*]f32,
-    k: [*]f32,
-    v: [*]f32,
-    att: [*]f32,
-    logits: [*]f32,
-    key_cache: [*]f32,
-    value_cache: [*]f32,
+pub const RunState = struct {
+    x: []f32,
+    xb: []f32,
+    xb2: []f32,
+    hb: []f32,
+    hb2: []f32,
+    q: []f32,
+    k: []f32,
+    v: []f32,
+    att: []f32,
+    logits: []f32,
+    key_cache: []f32,
+    value_cache: []f32,
 };
 
-pub fn build_transformer(arg_t: *Transformer, arg_checkpoint_path: [:0]const u8) void {
+pub fn build_transformer(allocator: *std.mem.Allocator, arg_t: *Transformer, arg_checkpoint_path: [:0]const u8) !void {
     var t = arg_t;
     _ = &t;
     var checkpoint_path = arg_checkpoint_path;
     _ = &checkpoint_path;
     llama.read_checkpoint(checkpoint_path, &t.config, &t.weights, &t.fd, &t.data, &t.file_size);
-    malloc_run_state(&t.state, t.config);
+
+    try create_run_state(allocator, &t.state, t.config);
 }
 
-pub fn free_transformer(arg_t: *Transformer) void {
-    var t = arg_t;
-    _ = &t;
+pub fn free_transformer(allocator: *std.mem.Allocator, t: *Transformer) void {
     //if (t.*.data != @as([*c]f32, @ptrCast(@as(?*anyopaque, @ptrFromInt(@as(usize, 0) -% 1))))) {
-        _ = llama.munmap(@as(?*anyopaque, @ptrCast(t.data)), @as(usize, @bitCast(t.file_size)));
+    _ = llama.munmap(@as(?*anyopaque, @ptrCast(t.data)), @as(usize, @bitCast(t.file_size)));
     //}
     if (t.fd != -@as(c_int, 1)) {
         _ = llama.close(t.fd);
     }
-    free_run_state(&t.state);
+    destroy_run_state(allocator, &t.state);
 }
 
-pub fn rmsnorm(arg_o: [*c]f32, arg_x: [*c]f32, arg_weight: [*c]f32, arg_size: usize) void {
-    var o = arg_o;
-    _ = &o;
-    var x = arg_x;
-    _ = &x;
-    var weight = arg_weight;
-    _ = &weight;
-    var size = arg_size;
-    _ = &size;
+pub fn rmsnorm(o: []f32, x: []f32, weight: []f32, size: usize) void {
+    // calculate sum of squares
     var ss: f32 = 0.0;
-    _ = &ss;
-    {
-        var j: c_int = 0;
-        _ = &j;
-        while (j < size) : (j += 1) {
-            ss += (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* * (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*;
-        }
+    for (0..size) |j| {
+        ss += x[j] * x[j];
     }
+
     ss /= @as(f32, @floatFromInt(size));
     ss += 0.00001;
     ss = 1.0 / std.math.sqrt(ss);
-    {
-        var j: c_int = 0;
-        _ = &j;
-        while (j < size) : (j += 1) {
-            (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk o + @as(usize, @intCast(tmp)) else break :blk o - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* = (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk weight + @as(usize, @intCast(tmp)) else break :blk weight - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* * (ss * (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*);
-        }
+
+    // normalize and scale
+    for (0..size) |j| {
+        o[j] = weight[j] * (ss * x[j]);
     }
 }
 
-pub fn softmax(arg_x: [*c]f32, size: usize) void {
-    var x = arg_x;
-    _ = &x;
-    var max_val: f32 = x[@as(c_uint, @intCast(@as(c_int, 0)))];
-    _ = &max_val;
-    {
-        var i: c_int = 1;
-        _ = &i;
-        while (i < size) : (i += 1) {
-            if ((blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* > max_val) {
-                max_val = (blk: {
-                    const tmp = i;
-                    if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).*;
-            }
+pub fn softmax(x: []f32, size: usize) void {
+    // find max value (for numerical stability)
+    var max_val = x[0];
+    for (0..size) |i| {
+        if (x[i] > max_val) {
+            max_val = x[i];
         }
     }
+
+    // exp and sum
     var sum: f32 = 0.0;
-    _ = &sum;
-    {
-        var i: c_int = 0;
-        _ = &i;
-        while (i < size) : (i += 1) {
-            (blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* = std.math.exp((blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* - max_val);
-            sum += (blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*;
-        }
+    for (0..size) |i| {
+        x[i] = std.math.exp(x[i] - max_val);
+        sum += x[i];
     }
-    {
-        var i: c_int = 0;
-        _ = &i;
-        while (i < size) : (i += 1) {
-            (blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* /= sum;
-        }
+
+    // normalize
+    for (0..size) |i| {
+        x[i] /= sum;
     }
 }
 
-pub fn matmul(xout: [*c]f32, x: [*c]f32, w: [*c]f32, n: usize, d: usize) void {
+// W (d,n) @ x (n,) -> xout (d,)
+pub fn matmul(xout: []f32, x: []f32, w: [*]f32, n: usize, d: usize) void {
     for (0..d) |i| {
         var val: f32 = 0.0;
 
         for (0..n) |j| {
-            val += (blk: {
-                const tmp = (i * n) + j;
-                if (tmp >= 0) break :blk w + @as(usize, @intCast(tmp)) else break :blk w - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* * (blk: {
-                const tmp = j;
-                if (tmp >= 0) break :blk x + @as(usize, @intCast(tmp)) else break :blk x - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*;
+            val += w[i * n + j] * x[j];
         }
 
-        (blk: {
-            const tmp = i;
-            if (tmp >= 0) break :blk xout + @as(usize, @intCast(tmp)) else break :blk xout - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-        }).* = val;
+        xout[i] = val;
     }
 }
 
-pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) [*]f32 {
+pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
     const p = arg_transformer.config;
     const w = arg_transformer.weights;
     const s = &arg_transformer.state;
@@ -186,57 +120,66 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) [*]f32 {
     const head_size = dim / p.n_heads;
 
     // copy the token embedding into x
-    const content_row: [*]f32 = w.token_embedding_table + token * dim;
+    const content_offset = token * dim;
+    const content_size = dim;
+    const content_row: []f32 = w.token_embedding_table[content_offset .. content_offset + content_size];
 
-    _ = llama.memcpy(x, content_row, dim * @sizeOf(f32));
+    @memcpy(x, content_row);
 
     // forward all the layers
-    for (0..p.n_layers) |layer_index|
-    {
+    for (0..p.n_layers) |layer_index| {
         // attention rmsnorm
-        rmsnorm(s.xb, x, w.rms_att_weight + layer_index * dim, dim);
+        const rms_att_weight_offset = layer_index * dim;
+        const rms_att_weight_layer = w.rms_att_weight[rms_att_weight_offset .. rms_att_weight_offset + dim];
+        rmsnorm(s.xb, x, rms_att_weight_layer, dim);
 
         // key and value point to the kv cache
         const layer_kv_offset = layer_index * p.seq_len * kv_dim; // kv cache layer offset for convenience
-        s.k = s.key_cache + layer_kv_offset + pos * kv_dim;
-        s.v = s.value_cache + layer_kv_offset + pos * kv_dim;
+        const kv_offset = layer_kv_offset + pos * kv_dim;
+
+        s.k = s.key_cache[kv_offset .. kv_offset + kv_dim]; // FIXME size
+        s.v = s.value_cache[kv_offset .. kv_offset + kv_dim]; // FIXME size
+
+        const slice_wq = w.wq + layer_index * p.dim * p.dim; // FIXME size
+        const slice_wk = w.wk + layer_index * p.dim * kv_dim;
+        const slice_wv = w.wv + layer_index * p.dim * kv_dim;
 
         // qkv matmuls for this position
-        matmul(s.q, s.xb, w.wq + layer_index * p.dim * p.dim, dim, dim);
-        matmul(s.k, s.xb, w.wk + layer_index * p.dim * kv_dim, dim, kv_dim);
-        matmul(s.v, s.xb, w.wv + layer_index * p.dim * kv_dim, dim, kv_dim);
+        matmul(s.q, s.xb, slice_wq, dim, dim);
+        matmul(s.k, s.xb, slice_wk, dim, kv_dim);
+        matmul(s.v, s.xb, slice_wv, dim, kv_dim);
 
         // RoPE relative positional encoding: complex-valued rotate q and k in each head
         {
-        var i: usize = 0;
-        while (i < dim) : (i += @as(c_int, 2)) {
-            const head_dim = i % head_size;
-            const freq = 1.0 / std.math.pow(f32, 10000.0, @as(f32,@floatFromInt(head_dim)) / @as(f32,@floatFromInt(head_size)));
-            const val = freq * @as(f32, @floatFromInt(pos));
-            const fcr = std.math.cos(val);
-            const fci = std.math.sin(val);
-            const rotn: usize = if (i < kv_dim) 2 else 1; // how many vectors? 2 = q & k, 1 = q only
-            for(0..rotn) |v| {
-                const vec = if (v == 0) s.q else s.k; // the vector to rotate (query or key)
-                const v0 = vec[i];
-                const v1 = vec[i+1];
+            var i: usize = 0;
+            while (i < dim) : (i += @as(c_int, 2)) {
+                const head_dim = i % head_size;
+                const freq = 1.0 / std.math.pow(f32, 10000.0, @as(f32, @floatFromInt(head_dim)) / @as(f32, @floatFromInt(head_size)));
+                const val = freq * @as(f32, @floatFromInt(pos));
+                const fcr = std.math.cos(val);
+                const fci = std.math.sin(val);
+                const rotn: usize = if (i < kv_dim) 2 else 1; // how many vectors? 2 = q & k, 1 = q only
+                for (0..rotn) |v| {
+                    const vec = if (v == 0) s.q else s.k; // the vector to rotate (query or key)
+                    const v0 = vec[i];
+                    const v1 = vec[i + 1];
 
-                vec[i]   = v0 * fcr - v1 * fci;
-                vec[i+1] = v0 * fci + v1 * fcr;
+                    vec[i] = v0 * fcr - v1 * fci;
+                    vec[i + 1] = v0 * fci + v1 * fcr;
+                }
             }
-        }
         }
 
         // multihead attention. iterate over all heads
         for (0..p.n_heads) |h| {
             // get the query vector for this head
-            const q = s.q + h * head_size;
+            const q = s.q[h * head_size ..]; // FIXME
             // attention scores for this head
-            const att = s.att + h * p.seq_len;
+            const att = s.att[h * p.seq_len ..]; // FIXME
             // iterate over all timesteps, including the current one
             for (0..pos + 1) |t| {
                 // get the key vector for this head and at this timestep
-                const k = s.key_cache + layer_kv_offset + t * kv_dim + (h / kv_mul) * head_size;
+                const k = s.key_cache[layer_kv_offset + t * kv_dim + (h / kv_mul) * head_size ..]; // FIXME
                 // calculate the attention score as the dot product of q and k
                 var score: f32 = 0.0;
                 for (0..head_size) |i| {
@@ -251,13 +194,13 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) [*]f32 {
             softmax(att, pos + 1);
 
             // weighted sum of the values, store back into xb
-            const xb = s.xb + h * head_size;
+            const xb = s.xb[h * head_size .. (h + 1) * head_size];
 
-            _ = llama.memset(xb, 0, head_size * @sizeOf(f32));
+            @memset(xb, 0.0);
 
             for (0..pos + 1) |t| {
                 // get the value vector for this head and at this timestep
-                const v = s.value_cache + layer_kv_offset + t * kv_dim + (h / kv_mul) * head_size;
+                const v = s.value_cache[layer_kv_offset + t * kv_dim + (h / kv_mul) * head_size ..]; // FIXME
                 // get the attention weight for this timestep
                 const a = att[t];
                 // accumulate the weighted value into xb
@@ -276,7 +219,9 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) [*]f32 {
         }
 
         // ffn rmsnorm
-        rmsnorm(s.xb, x, w.rms_ffn_weight + layer_index * dim, dim);
+        const rms_ffn_weight_offset = layer_index * dim;
+        const rms_ffn_weight_layer = w.rms_ffn_weight[rms_ffn_weight_offset .. rms_ffn_weight_offset + dim];
+        rmsnorm(s.xb, x, rms_ffn_weight_layer, dim);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
@@ -303,39 +248,57 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) [*]f32 {
     }
 
     // final rmsnorm
-    rmsnorm(x, x, w.rms_final_weight, dim);
+    rmsnorm(x, x, w.rms_final_weight[0..dim], dim);
 
     // classifier into logits
     matmul(s.logits, x, w.wcls, p.dim, p.vocab_size);
+
     return s.logits;
 }
 
-pub fn malloc_run_state(s: *RunState, p: Config) void {
-    var kv_dim: usize = @divTrunc(p.dim * p.n_kv_heads, p.n_heads);
-    _ = &kv_dim;
+pub fn create_run_state(allocator: *std.mem.Allocator, s: *RunState, p: Config) !void {
+    const kv_dim = @divTrunc(p.dim * p.n_kv_heads, p.n_heads);
 
-    s.x = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.dim, @sizeOf(f32)))));
-    s.xb = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.dim, @sizeOf(f32)))));
-    s.xb2 = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.dim, @sizeOf(f32)))));
-    s.hb = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.hidden_dim, @sizeOf(f32)))));
-    s.hb2 = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.hidden_dim, @sizeOf(f32)))));
-    s.q = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.dim, @sizeOf(f32)))));
-    s.key_cache = @as([*]f32, @ptrCast(@alignCast(llama.calloc((p.n_layers * p.seq_len) * kv_dim, @sizeOf(f32)))));
-    s.value_cache = @as([*]f32, @ptrCast(@alignCast(llama.calloc((p.n_layers * p.seq_len) * kv_dim, @sizeOf(f32)))));
-    s.att = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.n_heads * p.seq_len, @sizeOf(f32)))));
-    s.logits = @as([*]f32, @ptrCast(@alignCast(llama.calloc(p.vocab_size, @sizeOf(f32)))));
-    // FIXME error handling
+    s.x = try allocator.alloc(f32, p.dim);
+    errdefer allocator.free(s.x);
+
+    s.xb = try allocator.alloc(f32, p.dim);
+    errdefer allocator.free(s.xb);
+
+    s.xb2 = try allocator.alloc(f32, p.dim);
+    errdefer allocator.free(s.xb2);
+
+    s.hb = try allocator.alloc(f32, p.hidden_dim);
+    errdefer allocator.free(s.hb);
+
+    s.hb2 = try allocator.alloc(f32, p.hidden_dim);
+    errdefer allocator.free(s.hb2);
+
+    s.q = try allocator.alloc(f32, p.dim);
+    errdefer allocator.free(s.q);
+
+    s.key_cache = try allocator.alloc(f32, (p.n_layers * p.seq_len) * kv_dim);
+    errdefer allocator.free(s.key_cache);
+
+    s.value_cache = try allocator.alloc(f32, (p.n_layers * p.seq_len) * kv_dim);
+    errdefer allocator.free(s.value_cache);
+
+    s.att = try allocator.alloc(f32, p.n_heads * p.seq_len);
+    errdefer allocator.free(s.att);
+
+    s.logits = try allocator.alloc(f32, p.vocab_size);
+    errdefer allocator.free(s.logits);
 }
 
-pub fn free_run_state(s: *RunState) void {
-    llama.free(@as(?*anyopaque, @ptrCast(s.x)));
-    llama.free(@as(?*anyopaque, @ptrCast(s.xb)));
-    llama.free(@as(?*anyopaque, @ptrCast(s.xb2)));
-    llama.free(@as(?*anyopaque, @ptrCast(s.hb)));
-    llama.free(@as(?*anyopaque, @ptrCast(s.hb2)));
-    llama.free(@as(?*anyopaque, @ptrCast(s.q)));
-    llama.free(@as(?*anyopaque, @ptrCast(s.att)));
-    llama.free(@as(?*anyopaque, @ptrCast(s.logits)));
-    llama.free(@as(?*anyopaque, @ptrCast(s.key_cache)));
-    llama.free(@as(?*anyopaque, @ptrCast(s.value_cache)));
+pub fn destroy_run_state(allocator: *std.mem.Allocator, s: *RunState) void {
+    allocator.free(s.x);
+    allocator.free(s.xb);
+    allocator.free(s.xb2);
+    allocator.free(s.hb);
+    allocator.free(s.hb2);
+    allocator.free(s.q);
+    allocator.free(s.att);
+    allocator.free(s.logits);
+    allocator.free(s.key_cache);
+    allocator.free(s.value_cache);
 }

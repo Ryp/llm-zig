@@ -20,24 +20,23 @@ pub fn error_usage() void {
     std.debug.print("  -y <string> (optional) system prompt in chat mode\n", .{});
 }
 
-pub fn main() void {
+pub fn main() !void {
     const checkpoint_path = "../stories15M.bin";
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    defer _ = gpa.deinit();
+    defer {
+        const check = gpa.deinit();
+        std.debug.assert(check == .ok);
+    }
+
+    var allocator = gpa.allocator();
 
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
 
-    var tokenizer_path: [*c]u8 = @as([*c]u8, @ptrCast(@volatileCast(@constCast("tokenizer.bin"))));
-    _ = &tokenizer_path;
-    var temperature: f32 = 1.0;
-    _ = &temperature;
-
-    var topp: f32 = 0.9;
-    _ = &topp;
-
+    const tokenizer_path: [*c]u8 = @as([*c]u8, @ptrCast(@volatileCast(@constCast("tokenizer.bin"))));
+    const temperature: f32 = 1.0;
+    const topp: f32 = 0.9;
     var steps: usize = 16;
 
     const prompt: [*c]const u8 = "What does Claire like?"; // FIXME
@@ -54,8 +53,9 @@ pub fn main() void {
     }
 
     var llama2_transformer: transformer.Transformer = undefined;
-    transformer.build_transformer(&llama2_transformer, checkpoint_path);
-    defer transformer.free_transformer(&llama2_transformer);
+
+    try transformer.build_transformer(&allocator, &llama2_transformer, checkpoint_path);
+    defer transformer.free_transformer(&allocator, &llama2_transformer);
 
     if (steps == 0 or steps > llama2_transformer.config.seq_len) {
         steps = llama2_transformer.config.seq_len;
