@@ -1655,114 +1655,6 @@ pub extern fn mincore(__start: ?*anyopaque, __len: usize, __vec: [*c]u8) c_int;
 pub extern fn shm_open(__name: [*c]const u8, __oflag: c_int, __mode: mode_t) c_int;
 pub extern fn shm_unlink(__name: [*c]const u8) c_int;
 
-pub const TransformerWeights = struct {
-    token_embedding_table: [*c]f32,
-    rms_att_weight: [*c]f32,
-    rms_ffn_weight: [*c]f32,
-    wq: [*c]f32,
-    wk: [*c]f32,
-    wv: [*c]f32,
-    wo: [*c]f32,
-    w1: [*c]f32,
-    w2: [*c]f32,
-    w3: [*c]f32,
-    rms_final_weight: [*c]f32,
-    wcls: [*c]f32,
-};
-
-pub const SerializedConfig = extern struct {
-    dim: u32,
-    hidden_dim: u32,
-    n_layers: u32,
-    n_heads: u32,
-    n_kv_heads: u32,
-    vocab_size: u32,
-    seq_len: u32,
-};
-
-pub fn memory_map_weights(w: *TransformerWeights, p: transformer.Config, arg_ptr: [*c]f32, shared_weights: bool) void {
-    const head_size = @divTrunc(p.dim, p.n_heads);
-    const n_layers = p.n_layers;
-
-    var ptr = arg_ptr;
-    w.token_embedding_table = ptr;
-    ptr += p.vocab_size * p.dim;
-    w.rms_att_weight = ptr;
-    ptr += n_layers * p.dim;
-    w.wq = ptr;
-    ptr += (n_layers * p.dim * p.n_heads * head_size);
-    w.wk = ptr;
-    ptr += (n_layers * p.dim * p.n_kv_heads * head_size);
-    w.wv = ptr;
-    ptr += (n_layers * p.dim * p.n_kv_heads * head_size);
-    w.wo = ptr;
-    ptr += n_layers * p.n_heads * head_size * p.dim;
-    w.rms_ffn_weight = ptr;
-    ptr += n_layers * p.dim;
-    w.w1 = ptr;
-    ptr += n_layers * p.dim * p.hidden_dim;
-    w.w2 = ptr;
-    ptr += n_layers * p.hidden_dim * p.dim;
-    w.w3 = ptr;
-    ptr += n_layers * p.dim * p.hidden_dim;
-    w.rms_final_weight = ptr;
-    ptr += p.dim;
-    ptr += @divTrunc(p.seq_len * head_size, 2);
-    ptr += @divTrunc(p.seq_len * head_size, 2);
-
-    w.wcls = if (shared_weights) w.token_embedding_table else ptr;
-}
-
-pub fn read_checkpoint(checkpoint: [:0]const u8, config: *transformer.Config, weights: *TransformerWeights, fd: [*c]c_int, data: *[*]f32, file_size: [*c]isize) void {
-    var file: ?*FILE = fopen(checkpoint, "rb");
-    _ = &file;
-    if (file == null) {
-        std.debug.print("Couldn't open file {s}\n", .{checkpoint});
-        unreachable;
-    }
-
-    var serialized_config: SerializedConfig = undefined;
-
-    if (fread(@as(?*anyopaque, @ptrCast(&serialized_config)), @sizeOf(SerializedConfig), @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1)))), file) != @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1))))) {
-        exit(@as(c_int, 1));
-    }
-
-    const shared_weights: bool = serialized_config.vocab_size > 0; // FIXME
-
-    // config.vocab_size = abs(config.vocab_size); // NOOP
-    std.debug.assert(@as(i32, @bitCast(serialized_config.vocab_size)) > 0);
-
-    config.* = .{
-        .dim = serialized_config.dim,
-        .hidden_dim = serialized_config.hidden_dim,
-        .n_layers = serialized_config.n_layers,
-        .n_heads = serialized_config.n_heads,
-        .n_kv_heads = serialized_config.n_kv_heads,
-        .vocab_size = serialized_config.vocab_size,
-        .seq_len = serialized_config.seq_len,
-    };
-
-    std.debug.print("config: {}\n", .{config});
-
-    _ = fseek(file, @as(c_long, @bitCast(@as(c_long, @as(c_int, 0)))), @as(c_int, 2));
-    file_size.* = ftell(file);
-    _ = fclose(file);
-    fd.* = open(checkpoint, @as(c_int, 0));
-    if (fd.* == -@as(c_int, 1)) {
-        _ = fprintf(stderr, "open failed!\n");
-        exit(@as(c_int, 1));
-    }
-    data.* = @as([*c]f32, @ptrCast(@alignCast(mmap(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0))), @as(usize, @bitCast(file_size.*)), @as(c_int, 1), @as(c_int, 2), fd.*, @as(__off_t, @bitCast(@as(c_long, @as(c_int, 0))))))));
-    //if (data.* == @as([*c]f32, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(usize, 0 -% 1))))))) {
-    //    _ = fprintf(stderr, "mmap failed!\n");
-    //    exit(@as(c_int, 1));
-    //}
-    var weights_ptr: [*c]f32 = data.* + (@sizeOf(SerializedConfig) / @sizeOf(f32));
-    _ = &weights_ptr;
-
-    memory_map_weights(weights, config.*, weights_ptr, shared_weights);
-}
-
 fn time_in_ms() c_long {
     var time_1: struct_timespec = undefined;
     _ = &time_1;
@@ -1770,16 +1662,7 @@ fn time_in_ms() c_long {
     return (time_1.tv_sec * @as(__time_t, @bitCast(@as(c_long, @as(c_int, 1000))))) + @divTrunc(time_1.tv_nsec, @as(__syscall_slong_t, @bitCast(@as(c_long, @as(c_int, 1000000)))));
 }
 
-pub fn generate(arg_transformer: *transformer.Transformer, arg_tokenizer: *tokenizer.Tokenizer, arg_sampler: *sample.Sampler, arg_prompt: [*c]const u8, steps: usize) void {
-    var sampler = arg_sampler;
-    _ = &sampler;
-    var prompt = arg_prompt;
-    _ = &prompt;
-    var empty_prompt: [*c]u8 = @as([*c]u8, @ptrCast(@volatileCast(@constCast(""))));
-    _ = &empty_prompt;
-    if (prompt == @as([*c]u8, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0))))))) {
-        prompt = empty_prompt;
-    }
+pub fn generate(arg_transformer: *transformer.Transformer, arg_tokenizer: *tokenizer.Tokenizer, sampler: *sample.Sampler, prompt: [:0]const u8, steps: usize) void {
     var num_prompt_tokens: usize = 0;
     var prompt_tokens: [*c]c_int = @as([*c]c_int, @ptrCast(@alignCast(malloc((strlen(prompt) +% @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 3))))) *% @sizeOf(c_int)))));
     _ = &prompt_tokens;
@@ -1789,13 +1672,10 @@ pub fn generate(arg_transformer: *transformer.Transformer, arg_tokenizer: *token
         exit(@as(c_int, 1));
     }
     var start: c_long = 0;
-    _ = &start;
     var next: u16 = undefined;
-    _ = &next;
     var token: u16 = @intCast(prompt_tokens[@as(c_uint, @intCast(@as(c_int, 0)))]);
-    _ = &token;
     var pos: usize = 0;
-    _ = &pos;
+
     while (pos < steps) {
         const logits = transformer.forward(arg_transformer, token, pos);
         if (pos < num_prompt_tokens - 1) {

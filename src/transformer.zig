@@ -1,5 +1,5 @@
 const std = @import("std");
-const llama = @import("llama.zig");
+const weights = @import("weights.zig");
 
 pub const Config = struct {
     dim: usize,
@@ -13,28 +13,23 @@ pub const Config = struct {
 
 pub const Transformer = struct {
     config: Config,
-    weights: llama.TransformerWeights,
+    weights: weights.TransformerWeights,
     state: RunState,
-    fd: c_int,
-    data: [*]f32,
     file_size: isize,
 };
 
 pub fn build_transformer(allocator: *std.mem.Allocator, t: *Transformer, checkpoint_path: [:0]const u8) !void {
-    llama.read_checkpoint(checkpoint_path, &t.config, &t.weights, &t.fd, &t.data, &t.file_size);
+    t.weights = try weights.open_weights_from_file(checkpoint_path, &t.config, &t.file_size);
+    errdefer weights.close_weights_from_file(t.weights);
 
     try create_run_state(allocator, &t.state, t.config);
+    errdefer destroy_run_state(allocator, &t.state);
 }
 
 pub fn free_transformer(allocator: *std.mem.Allocator, t: *Transformer) void {
-    //if (t.*.data != @as([*c]f32, @ptrCast(@as(?*anyopaque, @ptrFromInt(@as(usize, 0) -% 1))))) {
-    _ = llama.munmap(@as(?*anyopaque, @ptrCast(t.data)), @as(usize, @bitCast(t.file_size)));
-    //}
-    if (t.fd != -@as(c_int, 1)) {
-        _ = llama.close(t.fd);
-    }
-
     destroy_run_state(allocator, &t.state);
+
+    weights.close_weights_from_file(t.weights);
 }
 
 pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
