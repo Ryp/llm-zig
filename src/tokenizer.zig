@@ -20,7 +20,7 @@ export fn compare_tokens(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_i
     return llama.strcmp(a.str, b.str);
 }
 
-pub fn build_tokenizer(arg_t: [*c]Tokenizer, arg_tokenizer_path: [*c]u8, arg_vocab_size: usize) void {
+pub fn build_tokenizer(arg_t: [*c]Tokenizer, arg_tokenizer_path: [*c]const u8, arg_vocab_size: usize) void {
     var t = arg_t;
     _ = &t;
     var tokenizer_path = arg_tokenizer_path;
@@ -242,12 +242,14 @@ pub fn encode(arg_t: [*c]Tokenizer, arg_text: [*c]const u8, arg_bos: i8, arg_eos
             if ((@as(c_int, @bitCast(@as(c_uint, c.*))) & @as(c_int, 192)) != @as(c_int, 128)) {
                 str_len = 0;
             }
-            str_buffer[blk: {
-                const ref = &str_len;
-                const tmp = ref.*;
-                ref.* +%= 1;
-                break :blk tmp;
-            }] = c.*;
+            str_buffer[
+                blk: {
+                    const ref = &str_len;
+                    const tmp = ref.*;
+                    ref.* +%= 1;
+                    break :blk tmp;
+                }
+            ] = c.*;
             str_buffer[str_len] = '\x00';
             if (((@as(c_int, @bitCast(@as(c_uint, (c + @as(usize, @bitCast(@as(isize, @intCast(@as(c_int, 1)))))).*))) & @as(c_int, 192)) == @as(c_int, 128)) and (str_len < @as(usize, @bitCast(@as(c_long, @as(c_int, 4)))))) {
                 continue;

@@ -34,12 +34,12 @@ pub fn main() !void {
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
 
-    const tokenizer_path: [*c]u8 = @as([*c]u8, @ptrCast(@volatileCast(@constCast("tokenizer.bin"))));
+    const tokenizer_path = "tokenizer.bin";
     const temperature: f32 = 1.0;
     const topp: f32 = 0.9;
-    var steps: usize = 16;
+    var steps: usize = 160;
 
-    const prompt: [*c]const u8 = "What does Claire like?"; // FIXME
+    const prompt = "What does Claire like?"; // FIXME
     const rng_seed: c_ulonglong = 0; // FIXME
 
     // FIXME Args parsing goes here
@@ -65,9 +65,8 @@ pub fn main() !void {
     token.build_tokenizer(&tokenizer, tokenizer_path, llama2_transformer.config.vocab_size);
     defer token.free_tokenizer(&tokenizer);
 
-    var sampler: sample.Sampler = undefined;
-    sample.build_sampler(&sampler, llama2_transformer.config.vocab_size, temperature, topp, rng_seed);
-    defer sample.free_sampler(&sampler);
+    var sampler = try sample.create_sampler(&allocator, llama2_transformer.config.vocab_size, temperature, topp, rng_seed);
+    defer sample.free_sampler(&allocator, &sampler);
 
     llama.generate(&llama2_transformer, &tokenizer, &sampler, prompt, steps);
 }

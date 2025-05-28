@@ -1,14 +1,14 @@
 const std = @import("std");
 const llama = @import("llama.zig");
 
-pub const Config = extern struct {
-    dim: u32,
-    hidden_dim: u32,
-    n_layers: u32,
-    n_heads: u32,
-    n_kv_heads: u32,
-    vocab_size: u32,
-    seq_len: u32,
+pub const Config = struct {
+    dim: usize,
+    hidden_dim: usize,
+    n_layers: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    vocab_size: usize,
+    seq_len: usize,
 };
 
 pub const Transformer = struct {
@@ -20,26 +20,7 @@ pub const Transformer = struct {
     file_size: isize,
 };
 
-pub const RunState = struct {
-    x: []f32,
-    xb: []f32,
-    xb2: []f32,
-    hb: []f32,
-    hb2: []f32,
-    q: []f32,
-    k: []f32,
-    v: []f32,
-    att: []f32,
-    logits: []f32,
-    key_cache: []f32,
-    value_cache: []f32,
-};
-
-pub fn build_transformer(allocator: *std.mem.Allocator, arg_t: *Transformer, arg_checkpoint_path: [:0]const u8) !void {
-    var t = arg_t;
-    _ = &t;
-    var checkpoint_path = arg_checkpoint_path;
-    _ = &checkpoint_path;
+pub fn build_transformer(allocator: *std.mem.Allocator, t: *Transformer, checkpoint_path: [:0]const u8) !void {
     llama.read_checkpoint(checkpoint_path, &t.config, &t.weights, &t.fd, &t.data, &t.file_size);
 
     try create_run_state(allocator, &t.state, t.config);
@@ -52,59 +33,8 @@ pub fn free_transformer(allocator: *std.mem.Allocator, t: *Transformer) void {
     if (t.fd != -@as(c_int, 1)) {
         _ = llama.close(t.fd);
     }
+
     destroy_run_state(allocator, &t.state);
-}
-
-pub fn rmsnorm(o: []f32, x: []f32, weight: []f32, size: usize) void {
-    // calculate sum of squares
-    var ss: f32 = 0.0;
-    for (0..size) |j| {
-        ss += x[j] * x[j];
-    }
-
-    ss /= @as(f32, @floatFromInt(size));
-    ss += 0.00001;
-    ss = 1.0 / std.math.sqrt(ss);
-
-    // normalize and scale
-    for (0..size) |j| {
-        o[j] = weight[j] * (ss * x[j]);
-    }
-}
-
-pub fn softmax(x: []f32, size: usize) void {
-    // find max value (for numerical stability)
-    var max_val = x[0];
-    for (0..size) |i| {
-        if (x[i] > max_val) {
-            max_val = x[i];
-        }
-    }
-
-    // exp and sum
-    var sum: f32 = 0.0;
-    for (0..size) |i| {
-        x[i] = std.math.exp(x[i] - max_val);
-        sum += x[i];
-    }
-
-    // normalize
-    for (0..size) |i| {
-        x[i] /= sum;
-    }
-}
-
-// W (d,n) @ x (n,) -> xout (d,)
-pub fn matmul(xout: []f32, x: []f32, w: [*]f32, n: usize, d: usize) void {
-    for (0..d) |i| {
-        var val: f32 = 0.0;
-
-        for (0..n) |j| {
-            val += w[i * n + j] * x[j];
-        }
-
-        xout[i] = val;
-    }
 }
 
 pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
@@ -256,7 +186,74 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
     return s.logits;
 }
 
-pub fn create_run_state(allocator: *std.mem.Allocator, s: *RunState, p: Config) !void {
+fn rmsnorm(o: []f32, x: []f32, weight: []f32, size: usize) void {
+    // calculate sum of squares
+    var ss: f32 = 0.0;
+    for (0..size) |j| {
+        ss += x[j] * x[j];
+    }
+
+    ss /= @as(f32, @floatFromInt(size));
+    ss += 0.00001;
+    ss = 1.0 / std.math.sqrt(ss);
+
+    // normalize and scale
+    for (0..size) |j| {
+        o[j] = weight[j] * (ss * x[j]);
+    }
+}
+
+pub fn softmax(x: []f32, size: usize) void {
+    // find max value (for numerical stability)
+    var max_val = x[0];
+    for (0..size) |i| {
+        if (x[i] > max_val) {
+            max_val = x[i];
+        }
+    }
+
+    // exp and sum
+    var sum: f32 = 0.0;
+    for (0..size) |i| {
+        x[i] = std.math.exp(x[i] - max_val);
+        sum += x[i];
+    }
+
+    // normalize
+    for (0..size) |i| {
+        x[i] /= sum;
+    }
+}
+
+// W (d,n) @ x (n,) -> xout (d,)
+fn matmul(xout: []f32, x: []f32, w: [*]f32, n: usize, d: usize) void {
+    for (0..d) |i| {
+        var val: f32 = 0.0;
+
+        for (0..n) |j| {
+            val += w[i * n + j] * x[j];
+        }
+
+        xout[i] = val;
+    }
+}
+
+const RunState = struct {
+    x: []f32,
+    xb: []f32,
+    xb2: []f32,
+    hb: []f32,
+    hb2: []f32,
+    q: []f32,
+    k: []f32,
+    v: []f32,
+    att: []f32,
+    logits: []f32,
+    key_cache: []f32,
+    value_cache: []f32,
+};
+
+fn create_run_state(allocator: *std.mem.Allocator, s: *RunState, p: Config) !void {
     const kv_dim = @divTrunc(p.dim * p.n_kv_heads, p.n_heads);
 
     s.x = try allocator.alloc(f32, p.dim);
@@ -290,7 +287,7 @@ pub fn create_run_state(allocator: *std.mem.Allocator, s: *RunState, p: Config) 
     errdefer allocator.free(s.logits);
 }
 
-pub fn destroy_run_state(allocator: *std.mem.Allocator, s: *RunState) void {
+fn destroy_run_state(allocator: *std.mem.Allocator, s: *RunState) void {
     allocator.free(s.x);
     allocator.free(s.xb);
     allocator.free(s.xb2);

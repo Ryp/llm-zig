@@ -1,15 +1,15 @@
-const llama = @import("llama.zig");
+const std = @import("std");
 
 const transformer = @import("transformer.zig");
 
-pub const ProbIndex = extern struct {
+pub const ProbIndex = struct {
     prob: f32 = 0,
     index: usize = 0,
 };
 
-pub const Sampler = extern struct {
+pub const Sampler = struct {
     vocab_size: usize = 0,
-    probindex: [*c]ProbIndex = @import("std").mem.zeroes([*c]ProbIndex),
+    probindex: []ProbIndex,
     temperature: f32 = @import("std").mem.zeroes(f32),
     topp: f32 = @import("std").mem.zeroes(f32),
     rng_state: c_ulonglong = @import("std").mem.zeroes(c_ulonglong),
@@ -42,21 +42,14 @@ fn sample_mult(probabilities: []f32, n: usize, coin: f32) usize {
     return n - 1; // in case of rounding errors
 }
 
-export fn compare(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_int {
-    var a = arg_a;
-    _ = &a;
-    var b = arg_b;
-    _ = &b;
-    var a_: [*c]ProbIndex = @as([*c]ProbIndex, @alignCast(@ptrCast(@volatileCast(@constCast(a)))));
-    _ = &a_;
-    var b_: [*c]ProbIndex = @as([*c]ProbIndex, @alignCast(@ptrCast(@volatileCast(@constCast(b)))));
-    _ = &b_;
-    if (a_.*.prob > b_.*.prob) return -@as(c_int, 1);
-    if (a_.*.prob < b_.*.prob) return 1;
-    return 0;
+fn prob_index_less_than(context: void, lhs: ProbIndex, rhs: ProbIndex) bool {
+    _ = context;
+
+    // Sort in decreasing order
+    return lhs.prob > rhs.prob;
 }
 
-fn sample_topp(probabilities: []f32, n: usize, topp: f32, probindex: [*c]ProbIndex, coin: f32) usize {
+fn sample_topp(probabilities: []f32, n: usize, topp: f32, probindex: []ProbIndex, coin: f32) usize {
     // top-p sampling (or "nucleus sampling") samples from the smallest set of
     // tokens that exceed probability topp. This way we never sample tokens that
     // have very low probabilities and are less likely to go "off the rails".
@@ -75,7 +68,7 @@ fn sample_topp(probabilities: []f32, n: usize, topp: f32, probindex: [*c]ProbInd
         }
     }
 
-    llama.qsort(@as(?*anyopaque, @ptrCast(probindex)), n0, @sizeOf(ProbIndex), &compare);
+    std.sort.pdq(ProbIndex, probindex[0..n0], {}, prob_index_less_than);
 
     // truncate the list where cumulative probability exceeds topp
     var cumulative_prob: f32 = 0.0;
@@ -101,30 +94,33 @@ fn sample_topp(probabilities: []f32, n: usize, topp: f32, probindex: [*c]ProbInd
     return probindex[last_idx].index; // in case of rounding errors
 }
 
-pub fn build_sampler(sampler: *Sampler, vocab_size: usize, temperature: f32, topp: f32, rng_seed: c_ulonglong) void {
-    sampler.vocab_size = vocab_size;
-    sampler.temperature = temperature;
-    sampler.topp = topp;
-    sampler.rng_state = rng_seed;
-    sampler.probindex = @as([*c]ProbIndex, @ptrCast(@alignCast(llama.malloc(sampler.vocab_size * @sizeOf(ProbIndex)))));
+pub fn create_sampler(allocator: *std.mem.Allocator, vocab_size: usize, temperature: f32, topp: f32, rng_seed: c_ulonglong) !Sampler {
+    return Sampler{
+        .vocab_size = vocab_size,
+        .temperature = temperature,
+        .topp = topp,
+        .rng_state = rng_seed,
+        .probindex = try allocator.alloc(ProbIndex, vocab_size),
+    };
 }
 
-pub fn free_sampler(sampler: *Sampler) void {
-    llama.free(@as(?*anyopaque, @ptrCast(sampler.probindex)));
+pub fn free_sampler(allocator: *std.mem.Allocator, sampler: *Sampler) void {
+    allocator.free(sampler.probindex);
 }
 
-fn random_u32(state: [*c]c_ulonglong) c_uint {
-    state.* ^= state.* >> @intCast(12);
-    state.* ^= state.* << @intCast(25);
-    state.* ^= state.* >> @intCast(27);
-    return @as(c_uint, @bitCast(@as(c_uint, @truncate((state.* *% @as(c_ulonglong, 2685821657736338717)) >> @intCast(32)))));
+fn random_u32(state: *u64) c_uint {
+    state.* ^= state.* >> 12;
+    state.* ^= state.* << 25;
+    state.* ^= state.* >> 27;
+
+    return @as(c_uint, @truncate((state.* *% 2685821657736338717) >> 32));
 }
 
-fn random_f32(state: [*c]c_ulonglong) f32 {
-    return @as(f32, @floatFromInt(random_u32(state) >> @intCast(8))) / 16777216.0;
+fn random_f32(state: *u64) f32 {
+    return @as(f32, @floatFromInt(random_u32(state) >> 8)) / 16777216.0;
 }
 
-pub fn sample(sampler: [*c]Sampler, logits: []f32) u16 {
+pub fn sample(sampler: *Sampler, logits: []f32) u16 {
     var next: usize = undefined;
     _ = &next;
     if (sampler.*.temperature == 0.0) {
