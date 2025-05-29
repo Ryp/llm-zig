@@ -15,11 +15,10 @@ pub const Transformer = struct {
     config: Config,
     weights: weights.TransformerWeights,
     state: RunState,
-    file_size: isize,
 };
 
 pub fn build_transformer(allocator: *std.mem.Allocator, t: *Transformer, checkpoint_path: [:0]const u8) !void {
-    t.weights = try weights.open_weights_from_file(checkpoint_path, &t.config, &t.file_size);
+    t.weights = try weights.open_weights_from_file(checkpoint_path, &t.config);
     errdefer weights.close_weights_from_file(t.weights);
 
     try create_run_state(allocator, &t.state, t.config);
@@ -47,7 +46,7 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
     // copy the token embedding into x
     const content_offset = token * dim;
     const content_size = dim;
-    const content_row: []f32 = w.token_embedding_table[content_offset .. content_offset + content_size];
+    const content_row = w.token_embedding_table[content_offset .. content_offset + content_size];
 
     @memcpy(x, content_row);
 
@@ -65,9 +64,9 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         s.k = s.key_cache[kv_offset .. kv_offset + kv_dim]; // FIXME size
         s.v = s.value_cache[kv_offset .. kv_offset + kv_dim]; // FIXME size
 
-        const slice_wq = w.wq + layer_index * p.dim * p.dim; // FIXME size
-        const slice_wk = w.wk + layer_index * p.dim * kv_dim;
-        const slice_wv = w.wv + layer_index * p.dim * kv_dim;
+        const slice_wq = w.wq[layer_index * p.dim * p.dim..]; // FIXME size
+        const slice_wk = w.wk[layer_index * p.dim * kv_dim..];
+        const slice_wv = w.wv[layer_index * p.dim * kv_dim..];
 
         // qkv matmuls for this position
         matmul(s.q, s.xb, slice_wq, dim, dim);
@@ -136,7 +135,7 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         }
 
         // final matmul to get the output of the attention
-        matmul(s.xb2, s.xb, w.wo + layer_index * dim * dim, dim, dim);
+        matmul(s.xb2, s.xb, w.wo[layer_index * dim * dim..], dim, dim);
 
         // residual connection back into x
         for (0..dim) |i| {
@@ -150,8 +149,8 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        matmul(s.hb, s.xb, w.w1 + layer_index * dim * p.hidden_dim, dim, p.hidden_dim);
-        matmul(s.hb2, s.xb, w.w3 + layer_index * dim * p.hidden_dim, dim, p.hidden_dim);
+        matmul(s.hb, s.xb, w.w1[layer_index * dim * p.hidden_dim..], dim, p.hidden_dim);
+        matmul(s.hb2, s.xb, w.w3[layer_index * dim * p.hidden_dim..], dim, p.hidden_dim);
 
         // SwiGLU non-linearity
         for (0..p.hidden_dim) |i| {
@@ -164,7 +163,7 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         }
 
         // final matmul to get the output of the ffn
-        matmul(s.xb, s.hb, w.w2 + layer_index * dim * p.hidden_dim, p.hidden_dim, dim);
+        matmul(s.xb, s.hb, w.w2[layer_index * dim * p.hidden_dim..], p.hidden_dim, dim);
 
         // residual connection
         for (0..dim) |i| {
@@ -173,15 +172,16 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
     }
 
     // final rmsnorm
-    rmsnorm(x, x, w.rms_final_weight[0..dim], dim);
+    rmsnorm(x, x, w.rms_final_weight, dim);
 
     // classifier into logits
-    matmul(s.logits, x, w.wcls, p.dim, p.vocab_size);
+    // Assuming we're reusing the same embedding table for this step
+    matmul(s.logits, x, w.token_embedding_table, p.dim, p.vocab_size);
 
     return s.logits;
 }
 
-fn rmsnorm(o: []f32, x: []f32, weight: []f32, size: usize) void {
+fn rmsnorm(o: []f32, x: []f32, weight: []const f32, size: usize) void {
     // calculate sum of squares
     var ss: f32 = 0.0;
     for (0..size) |j| {
@@ -221,7 +221,7 @@ pub fn softmax(x: []f32, size: usize) void {
 }
 
 // W (d,n) @ x (n,) -> xout (d,)
-fn matmul(xout: []f32, x: []f32, w: [*]f32, n: usize, d: usize) void {
+fn matmul(xout: []f32, x: []f32, w: []const f32, n: usize, d: usize) void {
     for (0..d) |i| {
         var val: f32 = 0.0;
 

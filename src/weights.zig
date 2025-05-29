@@ -1,27 +1,9 @@
 const std = @import("std");
 
 const transformer = @import("transformer.zig");
-const llama = @import("llama.zig");
 
-pub const TransformerWeights = struct {
-    mmap_fd: c_int,
-    mmap_handle: []align(std.heap.page_size_min) u8,
-
-    token_embedding_table: [*c]f32,
-    rms_att_weight: [*c]f32,
-    rms_ffn_weight: [*c]f32,
-    wq: [*c]f32,
-    wk: [*c]f32,
-    wv: [*c]f32,
-    wo: [*c]f32,
-    w1: [*c]f32,
-    w2: [*c]f32,
-    w3: [*c]f32,
-    rms_final_weight: [*c]f32,
-    wcls: [*c]f32,
-};
-
-pub const SerializedConfig = extern struct {
+// Only used for getting data from disk
+const SerializedConfig = extern struct {
     dim: u32,
     hidden_dim: u32,
     n_layers: u32,
@@ -31,56 +13,41 @@ pub const SerializedConfig = extern struct {
     seq_len: u32,
 };
 
-pub fn memory_map_weights(w: *TransformerWeights, p: transformer.Config, arg_ptr: [*]f32, shared_weights: bool) void {
-    const head_size = @divTrunc(p.dim, p.n_heads);
-    const n_layers = p.n_layers;
+pub const TransformerWeights = struct {
+    checkpoint_file: std.fs.File,
+    checkpoint_mmap_ptr: []align(std.heap.page_size_min) u8,
 
-    var ptr = arg_ptr;
-    w.token_embedding_table = ptr;
-    ptr += p.vocab_size * p.dim;
-    w.rms_att_weight = ptr;
-    ptr += n_layers * p.dim;
-    w.wq = ptr;
-    ptr += (n_layers * p.dim * p.n_heads * head_size);
-    w.wk = ptr;
-    ptr += (n_layers * p.dim * p.n_kv_heads * head_size);
-    w.wv = ptr;
-    ptr += (n_layers * p.dim * p.n_kv_heads * head_size);
-    w.wo = ptr;
-    ptr += n_layers * p.n_heads * head_size * p.dim;
-    w.rms_ffn_weight = ptr;
-    ptr += n_layers * p.dim;
-    w.w1 = ptr;
-    ptr += n_layers * p.dim * p.hidden_dim;
-    w.w2 = ptr;
-    ptr += n_layers * p.hidden_dim * p.dim;
-    w.w3 = ptr;
-    ptr += n_layers * p.dim * p.hidden_dim;
-    w.rms_final_weight = ptr;
-    ptr += p.dim;
-    ptr += @divTrunc(p.seq_len * head_size, 2);
-    ptr += @divTrunc(p.seq_len * head_size, 2);
+    token_embedding_table: []const f32,
+    rms_att_weight: []const f32,
+    rms_ffn_weight: []const f32,
+    wq: []const f32,
+    wk: []const f32,
+    wv: []const f32,
+    wo: []const f32,
+    w1: []const f32,
+    w2: []const f32,
+    w3: []const f32,
+    rms_final_weight: []const f32,
+};
 
-    w.wcls = if (shared_weights) w.token_embedding_table else ptr;
-}
-
-pub fn open_weights_from_file(checkpoint: [:0]const u8, config: *transformer.Config, file_size: *isize) !TransformerWeights {
+pub fn open_weights_from_file(checkpoint: [:0]const u8, config: *transformer.Config) !TransformerWeights {
     var weights: TransformerWeights = undefined;
 
-    var file: ?*llama.FILE = llama.fopen(checkpoint, "rb");
-    _ = &file;
-    if (file == null) {
-        std.debug.print("Couldn't open file {s}\n", .{checkpoint});
-        unreachable;
-    }
+    weights.checkpoint_file = if (std.fs.cwd().openFile(checkpoint, .{ .mode = .read_only })) |f| f else |err| {
+        std.debug.print("error: couldn't open checkpoint file: '{s}'\n", .{checkpoint});
+        return err;
+    };
+    errdefer weights.checkpoint_file.close();
 
+    const checkpoint_size_bytes = try weights.checkpoint_file.getEndPos();
+
+    // Read config first
     var serialized_config: SerializedConfig = undefined;
 
-    if (llama.fread(@as(?*anyopaque, @ptrCast(&serialized_config)), @sizeOf(SerializedConfig), @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1)))), file) != @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1))))) {
-        llama.exit(@as(c_int, 1));
-    }
+    const config_bytes: []u8 = std.mem.asBytes(&serialized_config);
+    const bytes_read = try weights.checkpoint_file.read(config_bytes);
+    std.debug.assert(bytes_read == config_bytes.len);
 
-    const shared_weights: bool = serialized_config.vocab_size > 0; // FIXME
     std.debug.assert(@as(i32, @bitCast(serialized_config.vocab_size)) > 0);
 
     config.* = .{
@@ -95,28 +62,44 @@ pub fn open_weights_from_file(checkpoint: [:0]const u8, config: *transformer.Con
 
     std.debug.print("config: {}\n", .{config});
 
-    _ = llama.fseek(file, 0, 2); // move file pointer to end of file
-    // fseek(file, 0, SEEK_END);
-    file_size.* = llama.ftell(file);
-    _ = llama.fclose(file);
+    weights.checkpoint_mmap_ptr = try std.posix.mmap(null, checkpoint_size_bytes, std.posix.PROT.READ, .{ .TYPE = .PRIVATE }, weights.checkpoint_file.handle, 0);
+    errdefer std.posix.munmap(weights.checkpoint_mmap_ptr);
 
-    weights.mmap_fd = try std.posix.open(checkpoint, .{ .ACCMODE = .RDONLY }, 0);
-    errdefer std.posix.close(weights.mmap_fd);
+    const weights_slice = std.mem.bytesAsSlice(f32, weights.checkpoint_mmap_ptr[@sizeOf(SerializedConfig)..]);
 
-    weights.mmap_handle = try std.posix.mmap(null, @bitCast(file_size.*), std.posix.PROT.READ, .{ .TYPE = .PRIVATE }, weights.mmap_fd, 0);
-    errdefer std.posix.munmap(weights.mmap_handle);
-
-    // FIXME use slice
-    const data = @as([*]f32, @ptrCast(weights.mmap_handle));
-
-    const weights_ptr = data + (@sizeOf(SerializedConfig) / @sizeOf(f32));
-
-    memory_map_weights(&weights, config.*, weights_ptr, shared_weights);
+    memory_map_weights(&weights, config.*, weights_slice);
 
     return weights;
 }
 
 pub fn close_weights_from_file(weights: TransformerWeights) void {
-    std.posix.munmap(weights.mmap_handle);
-    std.posix.close(weights.mmap_fd);
+    std.posix.munmap(weights.checkpoint_mmap_ptr);
+
+    weights.checkpoint_file.close();
+}
+
+fn memory_map_weights(w: *TransformerWeights, p: transformer.Config, arg_ptr: []const f32) void {
+    const head_size = @divTrunc(p.dim, p.n_heads);
+    const n_layers = p.n_layers;
+
+    var ptr = arg_ptr;
+
+    w.token_embedding_table = read_advance_ptr(&ptr, p.vocab_size * p.dim);
+    w.rms_att_weight = read_advance_ptr(&ptr, n_layers * p.dim);
+    w.wq = read_advance_ptr(&ptr, n_layers * p.dim * p.n_heads * head_size);
+    w.wk = read_advance_ptr(&ptr, n_layers * p.dim * p.n_kv_heads * head_size);
+    w.wv = read_advance_ptr(&ptr, n_layers * p.dim * p.n_kv_heads * head_size);
+    w.wo = read_advance_ptr(&ptr, n_layers * p.n_heads * head_size * p.dim);
+    w.rms_ffn_weight = read_advance_ptr(&ptr, n_layers * p.dim);
+    w.w1 = read_advance_ptr(&ptr, n_layers * p.dim * p.hidden_dim);
+    w.w2 = read_advance_ptr(&ptr, n_layers * p.hidden_dim * p.dim);
+    w.w3 = read_advance_ptr(&ptr, n_layers * p.dim * p.hidden_dim);
+    w.rms_final_weight = read_advance_ptr(&ptr, p.dim);
+}
+
+// Helper to load weights easily
+fn read_advance_ptr(ptr: *[]const f32, size_elements: usize) []const f32 {
+    const slice =  ptr.*[0..size_elements];
+    ptr.* = ptr.*[size_elements..];
+    return slice;
 }
