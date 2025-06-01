@@ -123,19 +123,19 @@ fn random_f32(state: *u64) f32 {
 pub fn sample(sampler: *Sampler, logits: []f32) u16 {
     var next: usize = undefined;
     _ = &next;
-    if (sampler.*.temperature == 0.0) {
-        next = sample_argmax(logits, sampler.*.vocab_size);
+    if (sampler.temperature == 0.0) {
+        next = sample_argmax(logits, sampler.vocab_size);
     } else {
-        for (0..sampler.*.vocab_size) |q| {
-            logits[q] /= sampler.*.temperature;
+        for (0..sampler.vocab_size) |q| {
+            logits[q] /= sampler.temperature;
         }
-        transformer.softmax(logits, sampler.*.vocab_size);
-        var coin: f32 = random_f32(&sampler.*.rng_state);
+        transformer.softmax(logits[0..sampler.vocab_size]);
+        var coin: f32 = random_f32(&sampler.rng_state);
         _ = &coin;
-        if ((sampler.*.topp <= @as(f32, @floatFromInt(@as(c_int, 0)))) or (sampler.*.topp >= @as(f32, @floatFromInt(@as(c_int, 1))))) {
-            next = sample_mult(logits, sampler.*.vocab_size, coin);
+        if ((sampler.topp <= @as(f32, @floatFromInt(@as(c_int, 0)))) or (sampler.topp >= @as(f32, @floatFromInt(@as(c_int, 1))))) {
+            next = sample_mult(logits, sampler.vocab_size, coin);
         } else {
-            next = sample_topp(logits, sampler.*.vocab_size, sampler.*.topp, sampler.*.probindex, coin);
+            next = sample_topp(logits, sampler.vocab_size, sampler.topp, sampler.probindex, coin);
         }
     }
     return @intCast(next);

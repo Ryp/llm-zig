@@ -55,7 +55,7 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         // attention rmsnorm
         const rms_att_weight_offset = layer_index * dim;
         const rms_att_weight_layer = w.rms_att_weight[rms_att_weight_offset .. rms_att_weight_offset + dim];
-        rmsnorm(s.xb, x, rms_att_weight_layer, dim);
+        rmsnorm(s.xb, x, rms_att_weight_layer);
 
         // key and value point to the kv cache
         const layer_kv_offset = layer_index * p.seq_len * kv_dim; // kv cache layer offset for convenience
@@ -64,14 +64,14 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         s.k = s.key_cache[kv_offset .. kv_offset + kv_dim]; // FIXME size
         s.v = s.value_cache[kv_offset .. kv_offset + kv_dim]; // FIXME size
 
-        const slice_wq = w.wq[layer_index * p.dim * p.dim..]; // FIXME size
-        const slice_wk = w.wk[layer_index * p.dim * kv_dim..];
-        const slice_wv = w.wv[layer_index * p.dim * kv_dim..];
+        const slice_wq = w.wq[layer_index * p.dim * p.dim.. (layer_index + 1) * (p.dim * p.dim)]; // FIXME size
+        const slice_wk = w.wk[layer_index * p.dim * kv_dim..(layer_index + 1) * (p.dim * kv_dim)];
+        const slice_wv = w.wv[layer_index * p.dim * kv_dim..(layer_index + 1) * (p.dim * kv_dim)];
 
         // qkv matmuls for this position
-        matmul(s.q, s.xb, slice_wq, dim, dim);
-        matmul(s.k, s.xb, slice_wk, dim, kv_dim);
-        matmul(s.v, s.xb, slice_wv, dim, kv_dim);
+        matmul_1d(s.q, s.xb, slice_wq);
+        matmul_1d(s.k, s.xb, slice_wk);
+        matmul_1d(s.v, s.xb, slice_wv);
 
         // RoPE relative positional encoding: complex-valued rotate q and k in each head
         {
@@ -97,25 +97,27 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         // multihead attention. iterate over all heads
         for (0..p.n_heads) |h| {
             // get the query vector for this head
-            const q = s.q[h * head_size ..]; // FIXME
+            const q = s.q[h * head_size ..(h + 1) * head_size];
             // attention scores for this head
             const att = s.att[h * p.seq_len ..]; // FIXME
             // iterate over all timesteps, including the current one
             for (0..pos + 1) |t| {
                 // get the key vector for this head and at this timestep
-                const k = s.key_cache[layer_kv_offset + t * kv_dim + (h / kv_mul) * head_size ..]; // FIXME
+                const k_offset = layer_kv_offset + t * kv_dim + (h / kv_mul) * head_size;
+                const k = s.key_cache[k_offset ..k_offset + head_size];
                 // calculate the attention score as the dot product of q and k
-                var score: f32 = 0.0;
-                for (0..head_size) |i| {
-                    score += q[i] * k[i];
-                }
+                //std.debug.assert(head_size == q.len);
+                //std.debug.assert(head_size == k.len);
+
+                var score = dot(q, k);
                 score *= 1.0 / std.math.sqrt(@as(f32, @floatFromInt(head_size)));
+
                 // save the score to the attention buffer
                 att[t] = score;
             }
 
             // softmax the scores to get attention weights, from 0..pos inclusively
-            softmax(att, pos + 1);
+            softmax(att[0..pos + 1]);
 
             // weighted sum of the values, store back into xb
             const xb = s.xb[h * head_size .. (h + 1) * head_size];
@@ -135,7 +137,7 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         }
 
         // final matmul to get the output of the attention
-        matmul(s.xb2, s.xb, w.wo[layer_index * dim * dim..], dim, dim);
+        matmul_1d(s.xb2, s.xb, w.wo[layer_index * dim * dim..(layer_index + 1) * dim * dim]);
 
         // residual connection back into x
         for (0..dim) |i| {
@@ -145,12 +147,12 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         // ffn rmsnorm
         const rms_ffn_weight_offset = layer_index * dim;
         const rms_ffn_weight_layer = w.rms_ffn_weight[rms_ffn_weight_offset .. rms_ffn_weight_offset + dim];
-        rmsnorm(s.xb, x, rms_ffn_weight_layer, dim);
+        rmsnorm(s.xb, x, rms_ffn_weight_layer);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        matmul(s.hb, s.xb, w.w1[layer_index * dim * p.hidden_dim..], dim, p.hidden_dim);
-        matmul(s.hb2, s.xb, w.w3[layer_index * dim * p.hidden_dim..], dim, p.hidden_dim);
+        matmul_1d(s.hb, s.xb, w.w1[layer_index * dim * p.hidden_dim..(layer_index + 1) * dim * p.hidden_dim]);
+        matmul_1d(s.hb2, s.xb, w.w3[layer_index * dim * p.hidden_dim..(layer_index + 1) * dim * p.hidden_dim]);
 
         // SwiGLU non-linearity
         for (0..p.hidden_dim) |i| {
@@ -163,7 +165,7 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         }
 
         // final matmul to get the output of the ffn
-        matmul(s.xb, s.hb, w.w2[layer_index * dim * p.hidden_dim..], p.hidden_dim, dim);
+        matmul_1d(s.xb, s.hb, w.w2[layer_index * dim * p.hidden_dim..(layer_index + 1) * dim * p.hidden_dim]);
 
         // residual connection
         for (0..dim) |i| {
@@ -172,36 +174,39 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
     }
 
     // final rmsnorm
-    rmsnorm(x, x, w.rms_final_weight, dim);
+    rmsnorm(x, x, w.rms_final_weight);
 
     // classifier into logits
     // Assuming we're reusing the same embedding table for this step
-    matmul(s.logits, x, w.token_embedding_table, p.dim, p.vocab_size);
+    matmul_1d(s.logits, x, w.token_embedding_table);
 
     return s.logits;
 }
 
-fn rmsnorm(o: []f32, x: []f32, weight: []const f32, size: usize) void {
+fn rmsnorm(o: []f32, x: []f32, weight: []const f32) void {
+    std.debug.assert(o.len == weight.len);
+    std.debug.assert(x.len == weight.len);
+
     // calculate sum of squares
     var ss: f32 = 0.0;
-    for (0..size) |j| {
+    for (0..x.len) |j| {
         ss += x[j] * x[j];
     }
 
-    ss /= @as(f32, @floatFromInt(size));
+    ss /= @as(f32, @floatFromInt(x.len));
     ss += 0.00001;
     ss = 1.0 / std.math.sqrt(ss);
 
     // normalize and scale
-    for (0..size) |j| {
+    for (0..x.len) |j| {
         o[j] = weight[j] * (ss * x[j]);
     }
 }
 
-pub fn softmax(x: []f32, size: usize) void {
+pub fn softmax(x: []f32) void {
     // find max value (for numerical stability)
     var max_val = x[0];
-    for (0..size) |i| {
+    for (0..x.len) |i| {
         if (x[i] > max_val) {
             max_val = x[i];
         }
@@ -209,28 +214,42 @@ pub fn softmax(x: []f32, size: usize) void {
 
     // exp and sum
     var sum: f32 = 0.0;
-    for (0..size) |i| {
+    for (0..x.len) |i| {
         x[i] = std.math.exp(x[i] - max_val);
         sum += x[i];
     }
 
+    const sum_inv = 1.0 / sum;
+
     // normalize
-    for (0..size) |i| {
-        x[i] /= sum;
+    for (0..x.len) |i| {
+        x[i] *= sum_inv;
     }
 }
 
 // W (d,n) @ x (n,) -> xout (d,)
-fn matmul(xout: []f32, x: []f32, w: []const f32, n: usize, d: usize) void {
-    for (0..d) |i| {
+fn matmul_1d(o: []f32, x: []f32, w: []const f32) void {
+    std.debug.assert(o.len * x.len == w.len);
+
+    for (0..o.len) |i| {
         var val: f32 = 0.0;
 
-        for (0..n) |j| {
-            val += w[i * n + j] * x[j];
+        for (0..x.len) |j| {
+            val += w[i * x.len + j] * x[j];
         }
 
-        xout[i] = val;
+        o[i] = val;
     }
+}
+
+fn dot(o: []f32, x: []f32) f32 {
+    var acc: f32 = 0.0;
+
+    for (o, x) |l_o, l_x| {
+        acc += l_o * l_x;
+    }
+
+    return acc;
 }
 
 const RunState = struct {

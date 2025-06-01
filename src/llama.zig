@@ -1684,7 +1684,7 @@ pub fn generate(arg_transformer: *transformer.Transformer, arg_tokenizer: *token
                 if (tmp >= 0) break :blk prompt_tokens + @as(usize, @intCast(tmp)) else break :blk prompt_tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
             }).*);
         } else {
-            next = sample.sample(sampler, logits);
+            next = sample.sample(sampler, logits[0..arg_transformer.config.vocab_size]);
         }
         pos += 1;
         if (next == 1) {
