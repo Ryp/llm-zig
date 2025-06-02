@@ -2,7 +2,7 @@ const std = @import("std");
 
 const llama = @import("llama.zig");
 
-const token = @import("tokenizer.zig");
+const tokenizer = @import("tokenizer.zig");
 const sample = @import("sample.zig");
 const transformer = @import("transformer.zig");
 
@@ -54,19 +54,74 @@ pub fn main() !void {
 
     var llama2_transformer: transformer.Transformer = undefined;
 
-    try transformer.build_transformer(&allocator, &llama2_transformer, checkpoint_path);
-    defer transformer.free_transformer(&allocator, &llama2_transformer);
+    try transformer.create_transformer(&allocator, &llama2_transformer, checkpoint_path);
+    defer transformer.destroy_transformer(&allocator, &llama2_transformer);
 
     if (steps == 0 or steps > llama2_transformer.config.seq_len) {
         steps = llama2_transformer.config.seq_len;
     }
 
-    var tokenizer: token.Tokenizer = undefined;
-    token.build_tokenizer(&tokenizer, tokenizer_path, llama2_transformer.config.vocab_size);
-    defer token.free_tokenizer(&tokenizer);
+    var tok: tokenizer.Tokenizer = undefined;
+    tokenizer.build_tokenizer(&tok, tokenizer_path, llama2_transformer.config.vocab_size);
+    defer tokenizer.free_tokenizer(&tok);
 
     var sampler = try sample.create_sampler(&allocator, llama2_transformer.config.vocab_size, temperature, topp, rng_seed);
     defer sample.free_sampler(&allocator, &sampler);
 
-    llama.generate(&llama2_transformer, &tokenizer, &sampler, prompt, steps);
+    try generate(&allocator, &llama2_transformer, &tok, &sampler, prompt, steps);
+}
+
+fn generate(allocator: *std.mem.Allocator, arg_transformer: *transformer.Transformer, arg_tokenizer: *tokenizer.Tokenizer, sampler: *sample.Sampler, prompt: [:0]const u8, steps: usize) !void {
+    const prompt_len = llama.strlen(prompt);
+    const prompt_tokens = try allocator.alloc(c_int, prompt_len + 3); // +3 for '\0', ?BOS, ?EOS
+    defer allocator.free(prompt_tokens);
+
+    var num_prompt_tokens: usize = 0;
+    tokenizer.encode(arg_tokenizer, prompt, 1, 0, prompt_tokens.ptr, &num_prompt_tokens); // FIXME
+
+    if (num_prompt_tokens < 1) {
+        std.debug.print("Something is wrong, expected at least 1 prompt token\n", .{});
+        return error.Usage;
+    }
+
+    var start: c_long = 0;
+    var next: u16 = undefined;
+    var token: u16 = @intCast(prompt_tokens[0]);
+    var pos: usize = 0;
+
+    while (pos < steps) {
+        const logits = transformer.forward(arg_transformer, token, pos);
+
+        if (pos < num_prompt_tokens - 1) {
+            next = @intCast(prompt_tokens[pos + 1]);
+        } else {
+            next = sample.sample(sampler, logits[0..arg_transformer.config.vocab_size]);
+        }
+
+        pos += 1;
+
+        if (next == 1) {
+            break;
+        }
+
+        const piece: [*c]u8 = tokenizer.decode(arg_tokenizer, token, next);
+        tokenizer.safe_printf(piece);
+
+        _ = llama.fflush(llama.stdout);
+
+        token = next;
+
+        if (start == @as(c_long, @bitCast(@as(c_long, @as(c_int, 0))))) {
+            start = llama.time_in_ms();
+        }
+    }
+
+    _ = llama.printf("\n");
+
+    if (pos > 1) {
+        const end: c_long = llama.time_in_ms();
+        std.debug.print("achieved tok/s: {}\n", .{(@as(f64, @floatFromInt(pos - @as(c_int, 1))) / @as(f64, @floatFromInt(end - start))) * @as(f64, @floatFromInt(@as(c_int, 1000)))});
+    }
+
+    llama.free(@as(?*anyopaque, @ptrCast(prompt_tokens)));
 }

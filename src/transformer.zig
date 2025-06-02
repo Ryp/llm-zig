@@ -18,7 +18,7 @@ pub const Transformer = struct {
     state: RunState,
 };
 
-pub fn build_transformer(allocator: *std.mem.Allocator, t: *Transformer, checkpoint_path: [:0]const u8) !void {
+pub fn create_transformer(allocator: *std.mem.Allocator, t: *Transformer, checkpoint_path: [:0]const u8) !void {
     t.weights = try weights.open_weights_from_file(checkpoint_path, &t.config);
     errdefer weights.close_weights_from_file(t.weights);
 
@@ -26,7 +26,7 @@ pub fn build_transformer(allocator: *std.mem.Allocator, t: *Transformer, checkpo
     errdefer destroy_run_state(allocator, &t.state);
 }
 
-pub fn free_transformer(allocator: *std.mem.Allocator, t: *Transformer) void {
+pub fn destroy_transformer(allocator: *std.mem.Allocator, t: *Transformer) void {
     destroy_run_state(allocator, &t.state);
 
     weights.close_weights_from_file(t.weights);

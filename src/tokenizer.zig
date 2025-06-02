@@ -88,6 +88,7 @@ pub fn build_tokenizer(arg_t: [*c]Tokenizer, arg_tokenizer_path: [*c]const u8, a
     }
     _ = llama.fclose(file);
 }
+
 pub fn free_tokenizer(arg_t: [*c]Tokenizer) void {
     var t = arg_t;
     _ = &t;

@@ -1655,55 +1655,9 @@ pub extern fn mincore(__start: ?*anyopaque, __len: usize, __vec: [*c]u8) c_int;
 pub extern fn shm_open(__name: [*c]const u8, __oflag: c_int, __mode: mode_t) c_int;
 pub extern fn shm_unlink(__name: [*c]const u8) c_int;
 
-fn time_in_ms() c_long {
+pub fn time_in_ms() c_long {
     var time_1: struct_timespec = undefined;
     _ = &time_1;
     _ = clock_gettime(@as(c_int, 0), &time_1);
     return (time_1.tv_sec * @as(__time_t, @bitCast(@as(c_long, @as(c_int, 1000))))) + @divTrunc(time_1.tv_nsec, @as(__syscall_slong_t, @bitCast(@as(c_long, @as(c_int, 1000000)))));
-}
-
-pub fn generate(arg_transformer: *transformer.Transformer, arg_tokenizer: *tokenizer.Tokenizer, sampler: *sample.Sampler, prompt: [:0]const u8, steps: usize) void {
-    var num_prompt_tokens: usize = 0;
-    var prompt_tokens: [*c]c_int = @as([*c]c_int, @ptrCast(@alignCast(malloc((strlen(prompt) +% @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 3))))) *% @sizeOf(c_int)))));
-    _ = &prompt_tokens;
-    tokenizer.encode(arg_tokenizer, prompt, @as(i8, @bitCast(@as(i8, @truncate(@as(c_int, 1))))), @as(i8, @bitCast(@as(i8, @truncate(@as(c_int, 0))))), prompt_tokens, &num_prompt_tokens);
-    if (num_prompt_tokens < @as(c_int, 1)) {
-        _ = fprintf(stderr, "something is wrong, expected at least 1 prompt token\n");
-        exit(@as(c_int, 1));
-    }
-    var start: c_long = 0;
-    var next: u16 = undefined;
-    var token: u16 = @intCast(prompt_tokens[@as(c_uint, @intCast(@as(c_int, 0)))]);
-    var pos: usize = 0;
-
-    while (pos < steps) {
-        const logits = transformer.forward(arg_transformer, token, pos);
-        if (pos < num_prompt_tokens - 1) {
-            next = @intCast((blk: {
-                const tmp = pos + 1;
-                if (tmp >= 0) break :blk prompt_tokens + @as(usize, @intCast(tmp)) else break :blk prompt_tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*);
-        } else {
-            next = sample.sample(sampler, logits[0..arg_transformer.config.vocab_size]);
-        }
-        pos += 1;
-        if (next == 1) {
-            break;
-        }
-        var piece: [*c]u8 = tokenizer.decode(arg_tokenizer, token, next);
-        _ = &piece;
-        tokenizer.safe_printf(piece);
-        _ = fflush(stdout);
-        token = next;
-        if (start == @as(c_long, @bitCast(@as(c_long, @as(c_int, 0))))) {
-            start = time_in_ms();
-        }
-    }
-    _ = printf("\n");
-    if (pos > @as(c_int, 1)) {
-        var end: c_long = time_in_ms();
-        _ = &end;
-        _ = fprintf(stderr, "achieved tok/s: %f\n", (@as(f64, @floatFromInt(pos - @as(c_int, 1))) / @as(f64, @floatFromInt(end - start))) * @as(f64, @floatFromInt(@as(c_int, 1000))));
-    }
-    free(@as(?*anyopaque, @ptrCast(prompt_tokens)));
 }
