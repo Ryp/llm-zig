@@ -9,6 +9,7 @@ pub const Config = struct {
     n_kv_heads: usize,
     vocab_size: usize,
     seq_len: usize,
+    rope_theta: f32 = 10000.0,
 };
 
 pub const Transformer = struct {
@@ -64,32 +65,29 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         s.k = s.key_cache[kv_offset .. kv_offset + kv_dim]; // FIXME size
         s.v = s.value_cache[kv_offset .. kv_offset + kv_dim]; // FIXME size
 
-        const slice_wq = w.wq[layer_index * p.dim * p.dim.. (layer_index + 1) * (p.dim * p.dim)]; // FIXME size
-        const slice_wk = w.wk[layer_index * p.dim * kv_dim..(layer_index + 1) * (p.dim * kv_dim)];
-        const slice_wv = w.wv[layer_index * p.dim * kv_dim..(layer_index + 1) * (p.dim * kv_dim)];
+        const layer_wq = w.wq[layer_index * p.dim * p.dim.. (layer_index + 1) * (p.dim * p.dim)]; // FIXME size
+        const layer_wk = w.wk[layer_index * p.dim * kv_dim..(layer_index + 1) * (p.dim * kv_dim)];
+        const layer_wv = w.wv[layer_index * p.dim * kv_dim..(layer_index + 1) * (p.dim * kv_dim)];
 
         // qkv matmuls for this position
-        matmul_1d(s.q, s.xb, slice_wq);
-        matmul_1d(s.k, s.xb, slice_wk);
-        matmul_1d(s.v, s.xb, slice_wv);
+        matmul_1d(s.q, s.xb, layer_wq);
+        matmul_1d(s.k, s.xb, layer_wk);
+        matmul_1d(s.v, s.xb, layer_wv);
 
         // RoPE relative positional encoding: complex-valued rotate q and k in each head
         {
             var i: usize = 0;
             while (i < dim) : (i += @as(c_int, 2)) {
                 const head_dim = i % head_size;
-                const freq = 1.0 / std.math.pow(f32, 10000.0, @as(f32, @floatFromInt(head_dim)) / @as(f32, @floatFromInt(head_size)));
+                const freq = 1.0 / std.math.pow(f32, p.rope_theta, @as(f32, @floatFromInt(head_dim)) / @as(f32, @floatFromInt(head_size)));
                 const val = freq * @as(f32, @floatFromInt(pos));
                 const fcr = std.math.cos(val);
                 const fci = std.math.sin(val);
-                const rotn: usize = if (i < kv_dim) 2 else 1; // how many vectors? 2 = q & k, 1 = q only
-                for (0..rotn) |v| {
-                    const vec = if (v == 0) s.q else s.k; // the vector to rotate (query or key)
-                    const v0 = vec[i];
-                    const v1 = vec[i + 1];
 
-                    vec[i] = v0 * fcr - v1 * fci;
-                    vec[i + 1] = v0 * fci + v1 * fcr;
+                rotate_pair(s.q[i .. i + 2], fcr, fci);
+
+                if (i < kv_dim) {
+                    rotate_pair(s.k[i .. i + 2], fcr, fci);
                 }
             }
         }
@@ -181,6 +179,15 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
     matmul_1d(s.logits, x, w.token_embedding_table);
 
     return s.logits;
+}
+
+fn rotate_pair(pair: []f32, r: f32, i: f32) void {
+    const rslt: [2]f32 = .{
+        pair[0] * r - pair[1] * i,
+        pair[0] * i + pair[1] * r,
+    };
+
+    @memcpy(pair, &rslt);
 }
 
 fn rmsnorm(o: []f32, x: []f32, weight: []const f32) void {
