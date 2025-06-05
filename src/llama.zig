@@ -1654,10 +1654,3 @@ pub extern fn munlockall() c_int;
 pub extern fn mincore(__start: ?*anyopaque, __len: usize, __vec: [*c]u8) c_int;
 pub extern fn shm_open(__name: [*c]const u8, __oflag: c_int, __mode: mode_t) c_int;
 pub extern fn shm_unlink(__name: [*c]const u8) c_int;
-
-pub fn time_in_ms() c_long {
-    var time_1: struct_timespec = undefined;
-    _ = &time_1;
-    _ = clock_gettime(@as(c_int, 0), &time_1);
-    return (time_1.tv_sec * @as(__time_t, @bitCast(@as(c_long, @as(c_int, 1000))))) + @divTrunc(time_1.tv_nsec, @as(__syscall_slong_t, @bitCast(@as(c_long, @as(c_int, 1000000)))));
-}

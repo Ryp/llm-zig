@@ -1,7 +1,5 @@
 const std = @import("std");
 
-const llama = @import("llama.zig");
-
 const tokenizer = @import("tokenizer.zig");
 const sample = @import("sample.zig");
 const transformer = @import("transformer.zig");
@@ -37,7 +35,7 @@ pub fn main() !void {
     const tokenizer_path = "tokenizer.bin";
     const temperature: f32 = 1.0;
     const topp: f32 = 0.9;
-    var steps: usize = 160;
+    var steps: usize = 16;
 
     const prompt = "What does Claire like?"; // FIXME
     const rng_seed: c_ulonglong = 0; // FIXME
@@ -72,8 +70,7 @@ pub fn main() !void {
 }
 
 fn generate(allocator: *std.mem.Allocator, arg_transformer: *transformer.Transformer, arg_tokenizer: *tokenizer.Tokenizer, sampler: *sample.Sampler, prompt: [:0]const u8, steps: usize) !void {
-    const prompt_len = llama.strlen(prompt);
-    const prompt_tokens = try allocator.alloc(c_int, prompt_len + 3); // +3 for '\0', ?BOS, ?EOS
+    const prompt_tokens = try allocator.alloc(c_int, prompt.len + 3); // +3 for '\0', ?BOS, ?EOS
     defer allocator.free(prompt_tokens);
 
     var num_prompt_tokens: usize = 0;
@@ -84,7 +81,7 @@ fn generate(allocator: *std.mem.Allocator, arg_transformer: *transformer.Transfo
         return error.Usage;
     }
 
-    var start: c_long = 0;
+    var start: i64 = 0;
     var next: u16 = undefined;
     var token: u16 = @intCast(prompt_tokens[0]);
     var pos: usize = 0;
@@ -107,21 +104,17 @@ fn generate(allocator: *std.mem.Allocator, arg_transformer: *transformer.Transfo
         const piece: [*c]u8 = tokenizer.decode(arg_tokenizer, token, next);
         tokenizer.safe_printf(piece);
 
-        _ = llama.fflush(llama.stdout);
-
         token = next;
 
-        if (start == @as(c_long, @bitCast(@as(c_long, @as(c_int, 0))))) {
-            start = llama.time_in_ms();
+        if (start == 0) {
+            start = std.time.milliTimestamp();
         }
     }
 
-    _ = llama.printf("\n");
+    std.debug.print("\n", .{});
 
     if (pos > 1) {
-        const end: c_long = llama.time_in_ms();
-        std.debug.print("achieved tok/s: {}\n", .{(@as(f64, @floatFromInt(pos - @as(c_int, 1))) / @as(f64, @floatFromInt(end - start))) * @as(f64, @floatFromInt(@as(c_int, 1000)))});
+        const end = std.time.milliTimestamp();
+        std.debug.print("achieved tok/s: {d:.1}\n", .{(@as(f64, @floatFromInt(pos - @as(c_int, 1))) / @as(f64, @floatFromInt(end - start))) * @as(f64, @floatFromInt(@as(c_int, 1000)))});
     }
-
-    llama.free(@as(?*anyopaque, @ptrCast(prompt_tokens)));
 }

@@ -149,7 +149,8 @@ pub fn safe_printf(arg_piece: [*c]u8) void {
             return;
         }
     }
-    _ = llama.printf("%s", piece);
+    const std = @import("std");
+    std.debug.print("{s}", .{piece});
 }
 
 fn str_lookup(arg_str: [*c]u8, arg_sorted_vocab: [*c]TokenIndex, arg_vocab_size: c_int) c_int {
