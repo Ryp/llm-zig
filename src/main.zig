@@ -4,20 +4,6 @@ const tokenizer = @import("tokenizer.zig");
 const sample = @import("sample.zig");
 const transformer = @import("transformer.zig");
 
-pub fn error_usage() void {
-    std.debug.print("Usage:   run <checkpoint> [options]\n", .{});
-    std.debug.print("Example: run model.bin -n 256 -i \"Once upon a time\"\n", .{});
-    std.debug.print("Options:\n", .{});
-    std.debug.print("  -t <float>  temperature in [0,inf], default 1.0\n", .{});
-    std.debug.print("  -p <float>  p value in top-p (nucleus) sampling in [0,1] default 0.9\n", .{});
-    std.debug.print("  -s <int>    random seed, default time(NULL)\n", .{});
-    std.debug.print("  -n <int>    number of steps to run for, default 256. 0 = max_seq_len\n", .{});
-    std.debug.print("  -i <string> input prompt\n", .{});
-    std.debug.print("  -z <string> optional path to custom tokenizer\n", .{});
-    std.debug.print("  -m <string> mode: generate|chat, default: generate\n", .{});
-    std.debug.print("  -y <string> (optional) system prompt in chat mode\n", .{});
-}
-
 pub fn main() !void {
     const checkpoint_path = "../stories15M.bin";
 

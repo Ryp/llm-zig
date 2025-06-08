@@ -6,12 +6,12 @@ pub const TokenIndex = extern struct {
 };
 
 pub const Tokenizer = extern struct {
-    vocab: [*c][*c]u8 = @import("std").mem.zeroes([*c][*c]u8),
-    vocab_scores: [*c]f32 = @import("std").mem.zeroes([*c]f32),
+    vocab: [*c][*c]u8,
+    vocab_scores: [*c]f32,
     sorted_vocab: [*c]TokenIndex,
-    vocab_size: c_int = @import("std").mem.zeroes(c_int),
-    max_token_length: c_uint = @import("std").mem.zeroes(c_uint),
-    byte_pieces: [512]u8 = @import("std").mem.zeroes([512]u8),
+    vocab_size: c_int,
+    max_token_length: c_uint,
+    byte_pieces: [512]u8,
 };
 
 export fn compare_tokens(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_int {
@@ -106,6 +106,7 @@ pub fn free_tokenizer(arg_t: [*c]Tokenizer) void {
     llama.free(@as(?*anyopaque, @ptrCast(t.*.vocab_scores)));
     llama.free(@as(?*anyopaque, @ptrCast(t.*.sorted_vocab)));
 }
+
 pub fn decode(arg_t: [*c]Tokenizer, arg_prev_token: c_int, token: c_int) [*c]u8 {
     var t = arg_t;
     _ = &t;

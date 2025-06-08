@@ -1,5 +1,6 @@
 const std = @import("std");
 const weights = @import("weights.zig");
+const tensor = @import("tensor/tensor.zig");
 
 pub const Config = struct {
     dim: usize,
@@ -45,18 +46,15 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
     const head_size = dim / p.n_heads;
 
     // copy the token embedding into x
-    const content_offset = token * dim;
-    const content_size = dim;
-    const content_row = w.token_embedding_table[content_offset .. content_offset + content_size];
+    const content_row = w.token_embedding_table.sub_tensor(0, token);
 
-    @memcpy(x, content_row);
+    @memcpy(x, content_row.raw_data);
 
     // forward all the layers
     for (0..p.n_layers) |layer_index| {
         // attention rmsnorm
-        const rms_att_weight_offset = layer_index * dim;
-        const rms_att_weight_layer = w.rms_att_weight[rms_att_weight_offset .. rms_att_weight_offset + dim];
-        rmsnorm(s.xb, x, rms_att_weight_layer);
+        const rms_att_weight_layer = w.rms_att_weight.sub_tensor(0, layer_index);
+        rmsnorm(s.xb, x, rms_att_weight_layer.raw_data);
 
         // key and value point to the kv cache
         const layer_kv_offset = layer_index * p.seq_len * kv_dim; // kv cache layer offset for convenience
@@ -65,14 +63,14 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         s.k = s.key_cache[kv_offset .. kv_offset + kv_dim]; // FIXME size
         s.v = s.value_cache[kv_offset .. kv_offset + kv_dim]; // FIXME size
 
-        const layer_wq = w.wq[layer_index * p.dim * p.dim.. (layer_index + 1) * (p.dim * p.dim)]; // FIXME size
-        const layer_wk = w.wk[layer_index * p.dim * kv_dim..(layer_index + 1) * (p.dim * kv_dim)];
-        const layer_wv = w.wv[layer_index * p.dim * kv_dim..(layer_index + 1) * (p.dim * kv_dim)];
+        const layer_wq = w.wq.sub_tensor(0, layer_index);
+        const layer_wk = w.wk.sub_tensor(0, layer_index);
+        const layer_wv = w.wv.sub_tensor(0, layer_index);
 
         // qkv matmuls for this position
-        matmul_1d(s.q, s.xb, layer_wq);
-        matmul_1d(s.k, s.xb, layer_wk);
-        matmul_1d(s.v, s.xb, layer_wv);
+        matmul_1d(s.q, s.xb, layer_wq.raw_data);
+        matmul_1d(s.k, s.xb, layer_wk.raw_data);
+        matmul_1d(s.v, s.xb, layer_wv.raw_data);
 
         // RoPE relative positional encoding: complex-valued rotate q and k in each head
         {
@@ -143,9 +141,8 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
         }
 
         // ffn rmsnorm
-        const rms_ffn_weight_offset = layer_index * dim;
-        const rms_ffn_weight_layer = w.rms_ffn_weight[rms_ffn_weight_offset .. rms_ffn_weight_offset + dim];
-        rmsnorm(s.xb, x, rms_ffn_weight_layer);
+        const rms_ffn_weight_layer = w.rms_ffn_weight.sub_tensor(0, layer_index);
+        rmsnorm(s.xb, x, rms_ffn_weight_layer.raw_data);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
@@ -172,11 +169,11 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
     }
 
     // final rmsnorm
-    rmsnorm(x, x, w.rms_final_weight);
+    rmsnorm(x, x, w.rms_final_weight.raw_data);
 
     // classifier into logits
     // Assuming we're reusing the same embedding table for this step
-    matmul_1d(s.logits, x, w.token_embedding_table);
+    matmul_1d(s.logits, x, w.token_embedding_table.raw_data);
 
     return s.logits;
 }
