@@ -21,7 +21,7 @@ pub fn main() !void {
     const tokenizer_path = "tokenizer.bin";
     const temperature: f32 = 1.0;
     const topp: f32 = 0.9;
-    var steps: usize = 16;
+    var steps: usize = 160;
 
     const prompt = "What does Claire like?"; // FIXME
     const rng_seed: c_ulonglong = 0; // FIXME

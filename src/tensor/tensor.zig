@@ -45,19 +45,18 @@ pub fn GenericTensor(comptime is_const: bool, comptime scalar_type: type, compti
         }
 
         pub fn sub_tensor(self: Self, comptime sub_rank: usize, offset: usize) GenericTensor(is_const, self.scalar_type, self.rank - 1) {
-            const sub_shape = self.layout.shape[0..sub_rank] ++ self.layout.shape[sub_rank + 1..self.rank];
-            const sub_stride = self.layout.stride[0..sub_rank] ++ self.layout.stride[sub_rank + 1..self.rank];
+            const sub_shape = self.layout.shape[0..sub_rank] ++ self.layout.shape[sub_rank + 1 .. self.rank];
+            const sub_stride = self.layout.stride[0..sub_rank] ++ self.layout.stride[sub_rank + 1 .. self.rank];
 
             const sub_offset_start = self.layout.stride[sub_rank] * offset;
             // FIXME What happens if the tensor is not contiguous?
             const sub_offset_end = self.layout.stride[sub_rank] * (offset + 1);
 
             return .{
-                .layout = layout.Layout(self.rank - 1)
-                    {
-                        .shape = sub_shape.*,
-                        .stride = sub_stride.*,
-                    },
+                .layout = layout.Layout(self.rank - 1){
+                    .shape = sub_shape.*,
+                    .stride = sub_stride.*,
+                },
                 .raw_data = self.raw_data[sub_offset_start..sub_offset_end],
             };
         }
@@ -67,35 +66,35 @@ pub fn GenericTensor(comptime is_const: bool, comptime scalar_type: type, compti
 test "Tensor" {
     var raw_data = [_]f32{0.0} ** (4 * 8);
 
-    var tensor_a = Tensor(f32, 2).init(layout.left(2, .{4, 8}), &raw_data);
+    var tensor_a = Tensor(f32, 2).init(layout.left(2, .{ 4, 8 }), &raw_data);
 
-    try std.testing.expectEqual(.{4, 8}, tensor_a.layout.shape);
+    try std.testing.expectEqual(.{ 4, 8 }, tensor_a.layout.shape);
 
-    tensor_a.at(.{0, 0}).* = 1.0;
-    try std.testing.expectEqual(1.0, tensor_a.at(.{0, 0}).*);
+    tensor_a.at(.{ 0, 0 }).* = 1.0;
+    try std.testing.expectEqual(1.0, tensor_a.at(.{ 0, 0 }).*);
     tensor_a.raw_data[0] = 0.0;
-    try std.testing.expectEqual(0.0, tensor_a.at(.{0, 0}).*);
+    try std.testing.expectEqual(0.0, tensor_a.at(.{ 0, 0 }).*);
 
     tensor_a.raw_data[1] = 2.0;
-    try std.testing.expectEqual(2.0, tensor_a.at(.{1, 0}).*);
+    try std.testing.expectEqual(2.0, tensor_a.at(.{ 1, 0 }).*);
 
     tensor_a.raw_data[4] = 3.0;
-    try std.testing.expectEqual(3.0, tensor_a.at(.{0, 1}).*);
+    try std.testing.expectEqual(3.0, tensor_a.at(.{ 0, 1 }).*);
 }
 
 test "Subtensor" {
     var raw_data = [_]f32{0.0} ** (2 * 4 * 8);
 
-    var tensor_a = Tensor(f32, 3).init(layout.right(3, .{2, 4, 8}), &raw_data);
+    var tensor_a = Tensor(f32, 3).init(layout.right(3, .{ 2, 4, 8 }), &raw_data);
 
     try std.testing.expectEqual(4 * 8, tensor_a.layout.stride[0]);
 
     var tensor_b = tensor_a.sub_tensor(0, 1);
 
-    try std.testing.expectEqual(.{4, 8}, tensor_b.layout.shape);
-    try std.testing.expectEqual(.{8, 1}, tensor_b.layout.stride);
+    try std.testing.expectEqual(.{ 4, 8 }, tensor_b.layout.shape);
+    try std.testing.expectEqual(.{ 8, 1 }, tensor_b.layout.stride);
 
-    tensor_a.at(.{1, 2, 3}).* = 15.0;
+    tensor_a.at(.{ 1, 2, 3 }).* = 15.0;
 
-    try std.testing.expectEqual(15.0, tensor_b.at(.{2, 3}).*);
+    try std.testing.expectEqual(15.0, tensor_b.at(.{ 2, 3 }).*);
 }

@@ -74,5 +74,5 @@ test "Layout Size" {
     };
 
     try std.testing.expectEqual(8, layout.size_elements());
-    try std.testing.expectEqual(7, layout.element_offset(.{1, 3}));
+    try std.testing.expectEqual(7, layout.element_offset(.{ 1, 3 }));
 }

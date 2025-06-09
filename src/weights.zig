@@ -20,8 +20,8 @@ pub const TransformerWeights = struct {
     checkpoint_mmap_ptr: []align(std.heap.page_size_min) u8,
 
     token_embedding_table: tensor.ConstTensor(f32, 2),
-    rms_att_weight: tensor.ConstTensor(f32, 2),
-    rms_ffn_weight: tensor.ConstTensor(f32, 2),
+    rms_attn: tensor.ConstTensor(f32, 2),
+    rms_ffn: tensor.ConstTensor(f32, 2),
     wq: tensor.ConstTensor(f32, 3),
     wk: tensor.ConstTensor(f32, 3),
     wv: tensor.ConstTensor(f32, 3),
@@ -29,7 +29,7 @@ pub const TransformerWeights = struct {
     w1: tensor.ConstTensor(f32, 3),
     w2: tensor.ConstTensor(f32, 3),
     w3: tensor.ConstTensor(f32, 3),
-    rms_final_weight: tensor.ConstTensor(f32, 1),
+    rms_final: tensor.ConstTensor(f32, 1),
 };
 
 pub fn open_weights_from_file(checkpoint: [:0]const u8, config: *transformer.Config) !TransformerWeights {
@@ -81,27 +81,26 @@ pub fn close_weights_from_file(weights: TransformerWeights) void {
 }
 
 fn memory_map_weights(w: *TransformerWeights, p: transformer.Config, arg_ptr: []const f32) void {
-    const head_size = @divTrunc(p.dim, p.n_heads);
-    const n_layers = p.n_layers;
+    const head_size = @divExact(p.dim, p.n_heads);
 
     var ptr = arg_ptr;
 
-    w.token_embedding_table = tensor.ConstTensor(f32, 2).init(layout.right(2, .{p.vocab_size, p.dim}), read_advance_ptr(&ptr, p.vocab_size * p.dim));
-    w.rms_att_weight = tensor.ConstTensor(f32, 2).init(layout.right(2, .{n_layers, p.dim}), read_advance_ptr(&ptr, n_layers * p.dim));
-    w.wq = tensor.ConstTensor(f32, 3).init(layout.right(3, .{n_layers, p.dim, p.n_heads * head_size}), read_advance_ptr(&ptr, n_layers * p.dim * (p.n_heads * head_size)));
-    w.wk = tensor.ConstTensor(f32, 3).init(layout.right(3, .{n_layers, p.dim, p.n_kv_heads * head_size}), read_advance_ptr(&ptr, n_layers * p.dim * (p.n_kv_heads * head_size)));
-    w.wv = tensor.ConstTensor(f32, 3).init(layout.right(3, .{n_layers, p.dim, p.n_kv_heads * head_size}), read_advance_ptr(&ptr, n_layers * p.dim * (p.n_kv_heads * head_size)));
-    w.wo = tensor.ConstTensor(f32, 3).init(layout.right(3, .{n_layers, p.n_heads * head_size, p.dim}), read_advance_ptr(&ptr, n_layers * (p.n_heads * head_size) * p.dim));
-    w.rms_ffn_weight = tensor.ConstTensor(f32, 2).init(layout.right(2, .{n_layers, p.dim}), read_advance_ptr(&ptr, n_layers * p.dim));
-    w.w1 = tensor.ConstTensor(f32, 3).init(layout.right(3, .{n_layers, p.dim, p.hidden_dim}), read_advance_ptr(&ptr, n_layers * p.dim * p.hidden_dim));
-    w.w2 = tensor.ConstTensor(f32, 3).init(layout.right(3, .{n_layers, p.hidden_dim, p.dim}), read_advance_ptr(&ptr, n_layers * p.hidden_dim * p.dim));
-    w.w3 = tensor.ConstTensor(f32, 3).init(layout.right(3, .{n_layers, p.dim, p.hidden_dim}), read_advance_ptr(&ptr, n_layers * p.dim * p.hidden_dim));
-    w.rms_final_weight = tensor.ConstTensor(f32, 1).init(layout.right(1, .{p.dim}), read_advance_ptr(&ptr, p.dim));
+    w.token_embedding_table = tensor.ConstTensor(f32, 2).init(layout.right(2, .{ p.vocab_size, p.dim }), read_advance_ptr(&ptr, p.vocab_size * p.dim));
+    w.rms_attn = tensor.ConstTensor(f32, 2).init(layout.right(2, .{ p.n_layers, p.dim }), read_advance_ptr(&ptr, p.n_layers * p.dim));
+    w.wq = tensor.ConstTensor(f32, 3).init(layout.right(3, .{ p.n_layers, p.n_heads * head_size, p.dim }), read_advance_ptr(&ptr, p.n_layers * p.dim * (p.n_heads * head_size)));
+    w.wk = tensor.ConstTensor(f32, 3).init(layout.right(3, .{ p.n_layers, p.n_kv_heads * head_size, p.dim }), read_advance_ptr(&ptr, p.n_layers * p.dim * (p.n_kv_heads * head_size)));
+    w.wv = tensor.ConstTensor(f32, 3).init(layout.right(3, .{ p.n_layers, p.n_kv_heads * head_size, p.dim }), read_advance_ptr(&ptr, p.n_layers * p.dim * (p.n_kv_heads * head_size)));
+    w.wo = tensor.ConstTensor(f32, 3).init(layout.right(3, .{ p.n_layers, p.dim, p.n_heads * head_size }), read_advance_ptr(&ptr, p.n_layers * (p.n_heads * head_size) * p.dim));
+    w.rms_ffn = tensor.ConstTensor(f32, 2).init(layout.right(2, .{ p.n_layers, p.dim }), read_advance_ptr(&ptr, p.n_layers * p.dim));
+    w.w1 = tensor.ConstTensor(f32, 3).init(layout.right(3, .{ p.n_layers, p.hidden_dim, p.dim }), read_advance_ptr(&ptr, p.n_layers * p.dim * p.hidden_dim));
+    w.w2 = tensor.ConstTensor(f32, 3).init(layout.right(3, .{ p.n_layers, p.dim, p.hidden_dim }), read_advance_ptr(&ptr, p.n_layers * p.hidden_dim * p.dim));
+    w.w3 = tensor.ConstTensor(f32, 3).init(layout.right(3, .{ p.n_layers, p.hidden_dim, p.dim }), read_advance_ptr(&ptr, p.n_layers * p.dim * p.hidden_dim));
+    w.rms_final = tensor.ConstTensor(f32, 1).init(layout.right(1, .{p.dim}), read_advance_ptr(&ptr, p.dim));
 }
 
 // Helper to load weights easily
 fn read_advance_ptr(ptr: *[]const f32, size_elements: usize) []const f32 {
-    const slice =  ptr.*[0..size_elements];
+    const slice = ptr.*[0..size_elements];
     ptr.* = ptr.*[size_elements..];
     return slice;
 }
