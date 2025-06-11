@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
     const exe = b.addExecutable(.{
-        .name = "llama2",
+        .name = "llm",
         .root_source_file = b.path("src/main.zig"),
         .optimize = optimize,
         .target = target,
