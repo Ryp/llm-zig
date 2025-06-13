@@ -2,6 +2,7 @@ const std = @import("std");
 const weights = @import("weights.zig");
 const tensor = @import("tensor/tensor.zig");
 const layout = @import("tensor/layout.zig");
+const tokenizer = @import("tokenizer.zig");
 
 pub const Config = struct {
     vocab_size: usize,
@@ -95,7 +96,7 @@ fn destroy_run_state(allocator: *std.mem.Allocator, s: *RunState) void {
     allocator.free(s.value_cache.raw_data);
 }
 
-pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
+pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usize) []f32 {
     const p = arg_transformer.config;
     const w = arg_transformer.weights;
     const s = &arg_transformer.state;
@@ -106,7 +107,7 @@ pub fn forward(arg_transformer: *Transformer, token: u16, pos: usize) []f32 {
     const head_size_inv: f32 = 1.0 / std.math.sqrt(@as(f32, @floatFromInt(head_size)));
 
     // copy the token embedding into x
-    const token_embedding = w.token_embedding_table.sub_tensor(0, token);
+    const token_embedding = w.token_embedding_table.sub_tensor(0, @intFromEnum(token));
 
     @memcpy(s.x.raw_data, token_embedding.raw_data);
 

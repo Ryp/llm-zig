@@ -1,368 +1,272 @@
-const llama = @import("llama.zig");
+const std = @import("std");
 
-pub const TokenIndex = extern struct {
-    str: [*c]u8,
-    id: c_int,
+pub const Tokenizer = struct {
+    vocab: [][:0]const u8,
+    vocab_scores: []f32,
+    sorted_vocab: []TokenIndex,
+    vocab_size: usize,
+    max_token_length: usize,
+    byte_pieces: [256][1:0]u8,
 };
 
-pub const Tokenizer = extern struct {
-    vocab: [*c][*c]u8,
-    vocab_scores: [*c]f32,
-    sorted_vocab: [*c]TokenIndex,
-    vocab_size: c_int,
-    max_token_length: c_uint,
-    byte_pieces: [512]u8,
+pub const TokenId = enum(u16) {
+    Unknown = 0,
+    BOS = 1,
+    EOS = 2,
+    _,
 };
 
-export fn compare_tokens(arg_a: ?*const anyopaque, arg_b: ?*const anyopaque) c_int {
-    const a: *const TokenIndex = @alignCast(@ptrCast(arg_a));
-    const b: *const TokenIndex = @alignCast(@ptrCast(arg_b));
-    return llama.strcmp(a.str, b.str);
+const TokenIndex = struct {
+    str: [:0]const u8,
+    id: TokenId,
+};
+
+pub fn create_tokenizer(allocator: *std.mem.Allocator, tokenizer_path: [:0]const u8, vocab_size: usize) !Tokenizer {
+    var t: Tokenizer = undefined;
+
+    t.vocab_size = vocab_size;
+
+    t.vocab = try allocator.alloc([:0]const u8, vocab_size);
+    errdefer allocator.free(t.vocab);
+
+    t.vocab_scores = try allocator.alloc(f32, vocab_size);
+    errdefer allocator.free(t.vocab_scores);
+
+    for (&t.byte_pieces, 0..) |*byte_piece, i| {
+        byte_piece[0] = @intCast(i);
+    }
+
+    const tokenizer_file = if (std.fs.cwd().openFile(tokenizer_path, .{ .mode = .read_only })) |f| f else |err| {
+        std.debug.print("error: couldn't open file: '{s}'\n", .{tokenizer_path});
+        return err;
+    };
+    defer tokenizer_file.close();
+
+    var max_token_length: i32 = undefined;
+
+    {
+        const max_token_length_bytes = std.mem.asBytes(&max_token_length);
+        const bytes_read = try tokenizer_file.read(max_token_length_bytes);
+        std.debug.assert(bytes_read == max_token_length_bytes.len);
+    }
+
+    t.max_token_length = @intCast(max_token_length);
+
+    for (0..vocab_size) |i| {
+        {
+            const score_bytes = std.mem.asBytes(&t.vocab_scores[i]);
+            const bytes_read = try tokenizer_file.read(score_bytes);
+            std.debug.assert(bytes_read == score_bytes.len);
+        }
+
+        var len_i32: i32 = undefined;
+
+        {
+            const len_bytes = std.mem.asBytes(&len_i32);
+            const bytes_read = try tokenizer_file.read(len_bytes);
+            std.debug.assert(bytes_read == len_bytes.len);
+        }
+
+        const len: usize = @intCast(len_i32);
+        const vocab_i = try allocator.allocSentinel(u8, len, 0);
+        errdefer allocator.free(vocab_i);
+
+        const bytes_read = try tokenizer_file.read(vocab_i);
+        std.debug.assert(bytes_read == len);
+
+        t.vocab[i] = vocab_i;
+    }
+
+    t.sorted_vocab = try allocator.alloc(TokenIndex, vocab_size);
+    errdefer allocator.free(t.sorted_vocab);
+
+    for (0..t.vocab_size) |i| {
+        t.sorted_vocab[i] = .{
+            .str = t.vocab[i],
+            .id = @enumFromInt(i),
+        };
+    }
+
+    std.mem.sort(TokenIndex, t.sorted_vocab, {}, compare_tokens_less_than);
+
+    return t;
 }
 
-pub fn build_tokenizer(arg_t: [*c]Tokenizer, arg_tokenizer_path: [*c]const u8, arg_vocab_size: usize) void {
-    var t = arg_t;
-    _ = &t;
-    var tokenizer_path = arg_tokenizer_path;
-    _ = &tokenizer_path;
-    var vocab_size: c_int = @intCast(arg_vocab_size);
-    _ = &vocab_size;
-    t.*.vocab_size = vocab_size;
-    t.*.vocab = @as([*c][*c]u8, @ptrCast(@alignCast(llama.malloc(@as(c_ulong, @bitCast(@as(c_long, vocab_size))) *% @sizeOf([*c]u8)))));
-    t.*.vocab_scores = @as([*c]f32, @ptrCast(@alignCast(llama.malloc(@as(c_ulong, @bitCast(@as(c_long, vocab_size))) *% @sizeOf(f32)))));
-    t.*.sorted_vocab = null;
-    {
-        var i: c_int = 0;
-        _ = &i;
-        while (i < @as(c_int, 256)) : (i += 1) {
-            t.*.byte_pieces[@as(c_uint, @intCast(i * @as(c_int, 2)))] = @as(u8, @bitCast(@as(i8, @truncate(i))));
-            t.*.byte_pieces[@as(c_uint, @intCast((i * @as(c_int, 2)) + @as(c_int, 1)))] = '\x00';
-        }
-    }
-    var file: ?*llama.FILE = llama.fopen(tokenizer_path, "rb");
-    _ = &file;
-    if (!(file != null)) {
-        _ = llama.fprintf(llama.stderr, "couldn't load %s\n", tokenizer_path);
-        llama.exit(@as(c_int, 1));
-    }
-    if (llama.fread(@as(?*anyopaque, @ptrCast(&t.*.max_token_length)), @sizeOf(c_int), @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1)))), file) != @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1))))) {
-        _ = llama.fprintf(llama.stderr, "failed read\n");
-        llama.exit(@as(c_int, 1));
-    }
-    var len: c_int = undefined;
-    _ = &len;
-    {
-        var i: c_int = 0;
-        _ = &i;
-        while (i < vocab_size) : (i += 1) {
-            if (llama.fread(@as(?*anyopaque, @ptrCast(t.*.vocab_scores + @as(usize, @bitCast(@as(isize, @intCast(i)))))), @sizeOf(f32), @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1)))), file) != @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1))))) {
-                _ = llama.fprintf(llama.stderr, "failed read\n");
-                llama.exit(@as(c_int, 1));
-            }
-            if (llama.fread(@as(?*anyopaque, @ptrCast(&len)), @sizeOf(c_int), @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1)))), file) != @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1))))) {
-                _ = llama.fprintf(llama.stderr, "failed read\n");
-                llama.exit(@as(c_int, 1));
-            }
-            (blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk t.*.vocab + @as(usize, @intCast(tmp)) else break :blk t.*.vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* = @as([*c]u8, @ptrCast(@alignCast(llama.malloc(@as(c_ulong, @bitCast(@as(c_long, len + @as(c_int, 1))))))));
-            if (llama.fread(@as(?*anyopaque, @ptrCast((blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk t.*.vocab + @as(usize, @intCast(tmp)) else break :blk t.*.vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*)), @as(c_ulong, @bitCast(@as(c_long, len))), @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1)))), file) != @as(c_ulong, @bitCast(@as(c_long, @as(c_int, 1))))) {
-                _ = llama.fprintf(llama.stderr, "failed read\n");
-                llama.exit(@as(c_int, 1));
-            }
-            (blk: {
-                const tmp = len;
-                if (tmp >= 0) break :blk (blk_1: {
-                    const tmp_2 = i;
-                    if (tmp_2 >= 0) break :blk_1 t.*.vocab + @as(usize, @intCast(tmp_2)) else break :blk_1 t.*.vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp_2)) +% -1));
-                }).* + @as(usize, @intCast(tmp)) else break :blk (blk_1: {
-                    const tmp_2 = i;
-                    if (tmp_2 >= 0) break :blk_1 t.*.vocab + @as(usize, @intCast(tmp_2)) else break :blk_1 t.*.vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp_2)) +% -1));
-                }).* - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).* = '\x00';
-        }
-    }
-    _ = llama.fclose(file);
+fn compare_tokens_less_than(context: void, a: TokenIndex, b: TokenIndex) bool {
+    _ = context;
+    return std.mem.orderZ(u8, a.str, b.str) == .lt;
 }
 
-pub fn free_tokenizer(arg_t: [*c]Tokenizer) void {
-    var t = arg_t;
-    _ = &t;
+pub fn destroy_tokenizer(allocator: *std.mem.Allocator, t: *Tokenizer) void {
     {
-        var i: c_int = 0;
+        var i: usize = 0;
         _ = &i;
         while (i < t.*.vocab_size) : (i += 1) {
-            llama.free(@as(?*anyopaque, @ptrCast((blk: {
-                const tmp = i;
-                if (tmp >= 0) break :blk t.*.vocab + @as(usize, @intCast(tmp)) else break :blk t.*.vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-            }).*)));
+            allocator.free(t.vocab[i]);
         }
     }
-    llama.free(@as(?*anyopaque, @ptrCast(t.*.vocab)));
-    llama.free(@as(?*anyopaque, @ptrCast(t.*.vocab_scores)));
-    llama.free(@as(?*anyopaque, @ptrCast(t.*.sorted_vocab)));
+
+    allocator.free(t.vocab);
+    allocator.free(t.vocab_scores);
+    allocator.free(t.sorted_vocab);
 }
 
-pub fn decode(arg_t: [*c]Tokenizer, arg_prev_token: c_int, token: c_int) [*c]u8 {
-    var t = arg_t;
-    _ = &t;
-    var prev_token = arg_prev_token;
-    _ = &prev_token;
-    var piece: [*c]u8 = (blk: {
-        const tmp = token;
-        if (tmp >= 0) break :blk t.*.vocab + @as(usize, @intCast(tmp)) else break :blk t.*.vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-    }).*;
-    _ = &piece;
-    if ((prev_token == @as(c_int, 1)) and (@as(c_int, @bitCast(@as(c_uint, piece[@as(c_uint, @intCast(@as(c_int, 0)))]))) == @as(c_int, ' '))) {
-        piece += 1;
+pub fn decode(t: *Tokenizer, prev_token: TokenId, token: TokenId) [:0]const u8 {
+    var piece = t.vocab[@intFromEnum(token)];
+
+    // following BOS (1) token, sentencepiece decoder strips any leading whitespace (see PR #89)
+    if (prev_token == .BOS and piece[0] == ' ') {
+        piece = piece[1..];
     }
-    var byte_val: u8 = undefined;
-    _ = &byte_val;
-    if (llama.sscanf(piece, "<0x%02hhX>", &byte_val) == @as(c_int, 1)) {
-        piece = @as([*c]u8, @ptrCast(@alignCast(@as([*c]u8, @ptrCast(@alignCast(&t.*.byte_pieces)))))) + @as(usize, @bitCast(@as(isize, @intCast(@as(c_int, @bitCast(@as(c_uint, byte_val))) * @as(c_int, 2)))));
+
+    // careful, some tokens designate raw bytes, and look like e.g. '<0x01>'
+    // parse this and convert and return the actual byte
+    const length = std.mem.sliceTo(piece, 0).len;
+
+    if (length == 6) {
+        if (piece[0] == '<' and piece[5] == '>') {
+            if (std.fmt.parseUnsigned(u8, piece[1..5], 0) catch null) |n| {
+                piece = &t.byte_pieces[n];
+            }
+        }
     }
+
     return piece;
 }
 
-pub fn safe_printf(arg_piece: [*c]u8) void {
-    var piece = arg_piece;
-    _ = &piece;
-    if (piece == @as([*c]u8, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0))))))) {
+pub fn safe_printf(piece: [:0]const u8) void {
+    if (piece[0] == '\x00') {
         return;
     }
-    if (@as(c_int, @bitCast(@as(c_uint, piece[@as(c_uint, @intCast(@as(c_int, 0)))]))) == @as(c_int, '\x00')) {
-        return;
-    }
-    if (@as(c_int, @bitCast(@as(c_uint, piece[@as(c_uint, @intCast(@as(c_int, 1)))]))) == @as(c_int, '\x00')) {
-        var byte_val: u8 = @as(u8, @bitCast(piece[@as(c_uint, @intCast(@as(c_int, 0)))]));
-        _ = &byte_val;
-        if (!(((@as(c_int, @bitCast(@as(c_uint, (blk: {
-            const tmp = @as(c_int, @bitCast(@as(c_uint, byte_val)));
-            if (tmp >= 0) break :blk llama.__ctype_b_loc().* + @as(usize, @intCast(tmp)) else break :blk llama.__ctype_b_loc().* - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-        }).*))) & @as(c_int, @bitCast(@as(c_uint, @as(c_ushort, @bitCast(@as(c_short, @truncate(llama._ISprint)))))))) != 0) or ((@as(c_int, @bitCast(@as(c_uint, (blk: {
-            const tmp = @as(c_int, @bitCast(@as(c_uint, byte_val)));
-            if (tmp >= 0) break :blk llama.__ctype_b_loc().* + @as(usize, @intCast(tmp)) else break :blk llama.__ctype_b_loc().* - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-        }).*))) & @as(c_int, @bitCast(@as(c_uint, @as(c_ushort, @bitCast(@as(c_short, @truncate(llama._ISspace)))))))) != 0))) {
-            return;
+
+    if (piece[1] == '\x00') {
+        const byte_val = piece[0];
+
+        if (!(std.ascii.isPrint(byte_val) or std.ascii.isWhitespace(byte_val))) {
+            return; // bad byte, don't print it
         }
     }
-    const std = @import("std");
+
     std.debug.print("{s}", .{piece});
 }
 
-fn str_lookup(arg_str: [*c]u8, arg_sorted_vocab: [*c]TokenIndex, arg_vocab_size: c_int) c_int {
-    var str = arg_str;
-    _ = &str;
-    var sorted_vocab = arg_sorted_vocab;
-    _ = &sorted_vocab;
-    var vocab_size = arg_vocab_size;
-    _ = &vocab_size;
-    var tok: TokenIndex = TokenIndex{
-        .str = str,
-        .id = 0,
-    };
-    _ = &tok;
-    var res: [*c]TokenIndex = @as([*c]TokenIndex, @ptrCast(@alignCast(llama.bsearch(@as(?*const anyopaque, @ptrCast(&tok)), @as(?*const anyopaque, @ptrCast(sorted_vocab)), @as(usize, @bitCast(@as(c_long, vocab_size))), @sizeOf(TokenIndex), &compare_tokens))));
-    _ = &res;
-    return if (res != @as([*c]TokenIndex, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0))))))) res.*.id else -@as(c_int, 1);
+fn token_index_cmp(context: [:0]const u8, elt: TokenIndex) std.math.Order {
+    return std.mem.orderZ(u8, context, elt.str);
 }
 
-pub fn encode(arg_t: [*c]Tokenizer, arg_text: [*c]const u8, arg_bos: i8, arg_eos: i8, arg_tokens: [*c]c_int, arg_n_tokens: *usize) void {
-    var t = arg_t;
-    _ = &t;
-    var text = arg_text;
-    _ = &text;
-    var bos = arg_bos;
-    _ = &bos;
-    var eos = arg_eos;
-    _ = &eos;
-    var tokens = arg_tokens;
-    _ = &tokens;
-    var n_tokens = arg_n_tokens;
-    _ = &n_tokens;
-    if (text == @as([*c]u8, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0))))))) {
-        _ = llama.fprintf(llama.stderr, "cannot encode NULL text\n");
-        llama.exit(@as(c_int, 1));
+fn str_lookup(str: [:0]const u8, sorted_vocab: []const TokenIndex) ?TokenId {
+    // FIXME cast to null terminated string
+    const search_index = std.sort.binarySearch(TokenIndex, sorted_vocab, str, token_index_cmp);
+
+    if (search_index) |index| {
+        return sorted_vocab[index].id;
+    } else {
+        return null;
     }
-    if (t.*.sorted_vocab == @as([*c]TokenIndex, @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(@as(c_int, 0))))))) {
-        t.*.sorted_vocab = @as([*c]TokenIndex, @ptrCast(@alignCast(llama.malloc(@as(c_ulong, @bitCast(@as(c_long, t.*.vocab_size))) *% @sizeOf(TokenIndex)))));
-        {
-            var i: c_int = 0;
-            _ = &i;
-            while (i < t.*.vocab_size) : (i += 1) {
-                (blk: {
-                    const tmp = i;
-                    if (tmp >= 0) break :blk t.*.sorted_vocab + @as(usize, @intCast(tmp)) else break :blk t.*.sorted_vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).*.str = (blk: {
-                    const tmp = i;
-                    if (tmp >= 0) break :blk t.*.vocab + @as(usize, @intCast(tmp)) else break :blk t.*.vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).*;
-                (blk: {
-                    const tmp = i;
-                    if (tmp >= 0) break :blk t.*.sorted_vocab + @as(usize, @intCast(tmp)) else break :blk t.*.sorted_vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).*.id = i;
-            }
-        }
-        llama.qsort(@as(?*anyopaque, @ptrCast(t.*.sorted_vocab)), @as(usize, @bitCast(@as(c_long, t.*.vocab_size))), @sizeOf(TokenIndex), &compare_tokens);
-    }
-    var str_buffer: [*c]u8 = @as([*c]u8, @ptrCast(@alignCast(llama.malloc(@as(c_ulong, @bitCast(@as(c_ulong, ((t.*.max_token_length *% @as(c_uint, @bitCast(@as(c_int, 2)))) +% @as(c_uint, @bitCast(@as(c_int, 1)))) +% @as(c_uint, @bitCast(@as(c_int, 2)))))) *% @sizeOf(u8)))));
-    _ = &str_buffer;
+}
+
+pub fn encode(allocator: *std.mem.Allocator, t: *Tokenizer, text: [:0]const u8, put_bos: bool, put_eos: bool, tokens: []TokenId) !usize {
+    const str_buffer = try allocator.allocSentinel(u8, t.max_token_length * 2 + 1 + 2 *% @sizeOf(u8), 0);
+    defer allocator.free(str_buffer);
+
     var str_len: usize = 0;
-    _ = &str_len;
-    n_tokens.* = 0;
-    if (bos != 0) {
-        (blk: {
-            const tmp = blk_1: {
-                const ref = &n_tokens.*;
-                const tmp_2 = ref.*;
-                ref.* += 1;
-                break :blk_1 tmp_2;
-            };
-            if (tmp >= 0) break :blk tokens + @as(usize, @intCast(tmp)) else break :blk tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-        }).* = 1;
+    var n_tokens: usize = 0;
+
+    if (put_bos) {
+        tokens[n_tokens] = .BOS;
+        n_tokens += 1;
     }
-    if (@as(c_int, @bitCast(@as(c_uint, text[@as(c_uint, @intCast(@as(c_int, 0)))]))) != @as(c_int, '\x00')) {
-        var dummy_prefix: c_int = str_lookup(@as([*c]u8, @ptrCast(@volatileCast(@constCast(" ")))), t.*.sorted_vocab, t.*.vocab_size);
-        _ = &dummy_prefix;
-        (blk: {
-            const tmp = blk_1: {
-                const ref = &n_tokens.*;
-                const tmp_2 = ref.*;
-                ref.* += 1;
-                break :blk_1 tmp_2;
-            };
-            if (tmp >= 0) break :blk tokens + @as(usize, @intCast(tmp)) else break :blk tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-        }).* = dummy_prefix;
+
+    if (text[0] != '\x00') {
+        if (str_lookup(" ", t.sorted_vocab)) |id| {
+            tokens[n_tokens] = id;
+        } else {
+            @panic("Hell no");
+        }
+        n_tokens += 1;
     }
+
+    // process the raw (UTF-8) byte sequence of the input string
     {
-        var c: [*c]const u8 = text;
-        _ = &c;
-        while (@as(c_int, @bitCast(@as(c_uint, c.*))) != @as(c_int, '\x00')) : (c += 1) {
-            if ((@as(c_int, @bitCast(@as(c_uint, c.*))) & @as(c_int, 192)) != @as(c_int, 128)) {
+        var c = text;
+        while (c[0] != '\x00') : (c = c[1..]) {
+            // reset buffer if the current byte is ASCII or a leading byte
+            // 0xC0 is 11000000, so (*c & 0xC0) keeps the first 2 bits and zeros the rest
+            // 0x80 is 10000000
+            // in UTF-8, all continuation bytes start with "10" in first two bits
+            // so in English this is: "if this byte is not a continuation byte"
+            if ((c[0] & 0xC0) != 0x80) {
+                // this byte must be either a leading byte (11...) or an ASCII char (0x...)
+                // => reset our location, as we're starting a new UTF-8 codepoint
                 str_len = 0;
             }
-            str_buffer[
-                blk: {
-                    const ref = &str_len;
-                    const tmp = ref.*;
-                    ref.* +%= 1;
-                    break :blk tmp;
-                }
-            ] = c.*;
+
+            // append the current byte to the buffer
+            str_buffer[str_len] = c[0];
+            str_len += 1;
             str_buffer[str_len] = '\x00';
-            if (((@as(c_int, @bitCast(@as(c_uint, (c + @as(usize, @bitCast(@as(isize, @intCast(@as(c_int, 1)))))).*))) & @as(c_int, 192)) == @as(c_int, 128)) and (str_len < @as(usize, @bitCast(@as(c_long, @as(c_int, 4)))))) {
+
+            // while the next character is a continuation byte, continue appending
+            // but if there are too many of them, just stop to avoid overruning str_buffer size.
+            if ((c[1] & 0xC0) == 0x80 and str_len < 4) {
                 continue;
             }
-            var id: c_int = str_lookup(str_buffer, t.*.sorted_vocab, t.*.vocab_size);
-            _ = &id;
-            if (id != -@as(c_int, 1)) {
-                (blk: {
-                    const tmp = blk_1: {
-                        const ref = &n_tokens.*;
-                        const tmp_2 = ref.*;
-                        ref.* += 1;
-                        break :blk_1 tmp_2;
-                    };
-                    if (tmp >= 0) break :blk tokens + @as(usize, @intCast(tmp)) else break :blk tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).* = id;
+
+            // ok c+1 is not a continuation byte, so we've read in a full codepoint
+            if (str_lookup(str_buffer, t.sorted_vocab)) |id| {
+                // we found this codepoint in vocab, add it as a token
+                tokens[n_tokens] = id;
+                n_tokens += 1;
             } else {
-                {
-                    var i: c_int = 0;
-                    _ = &i;
-                    while (@as(usize, @bitCast(@as(c_long, i))) < str_len) : (i += 1) {
-                        (blk: {
-                            const tmp = blk_1: {
-                                const ref = &n_tokens.*;
-                                const tmp_2 = ref.*;
-                                ref.* += 1;
-                                break :blk_1 tmp_2;
-                            };
-                            if (tmp >= 0) break :blk tokens + @as(usize, @intCast(tmp)) else break :blk tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                        }).* = @as(c_int, @bitCast(@as(c_uint, @as(u8, @bitCast((blk: {
-                            const tmp = i;
-                            if (tmp >= 0) break :blk str_buffer + @as(usize, @intCast(tmp)) else break :blk str_buffer - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                        }).*))))) + @as(c_int, 3);
-                    }
+                // byte_fallback encoding: just encode each byte as a token
+                // +3 is here because the first 3 vocab elements are <unk>, <s>, </s>
+                // so the individual bytes only start at index 3
+                for (0..str_len) |i| {
+                    tokens[n_tokens] = @enumFromInt(str_buffer[i] + 3);
+                    n_tokens += 1;
                 }
             }
-            str_len = 0;
+
+            str_len = 0; // protect against a sequence of stray UTF8 continuation bytes
         }
     }
+
     while (true) {
-        var best_score: f32 = @as(f32, @floatCast(-10000000000.0));
-        _ = &best_score;
-        var best_id: c_int = -@as(c_int, 1);
-        _ = &best_id;
-        var best_idx: c_int = -@as(c_int, 1);
-        _ = &best_idx;
-        {
-            var i: c_int = 0;
-            _ = &i;
-            while (i < (n_tokens.* - @as(c_int, 1))) : (i += 1) {
-                _ = llama.sprintf(str_buffer, "%s%s", (blk: {
-                    const tmp = (blk_1: {
-                        const tmp_2 = i;
-                        if (tmp_2 >= 0) break :blk_1 tokens + @as(usize, @intCast(tmp_2)) else break :blk_1 tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp_2)) +% -1));
-                    }).*;
-                    if (tmp >= 0) break :blk t.*.vocab + @as(usize, @intCast(tmp)) else break :blk t.*.vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).*, (blk: {
-                    const tmp = (blk_1: {
-                        const tmp_2 = i + @as(c_int, 1);
-                        if (tmp_2 >= 0) break :blk_1 tokens + @as(usize, @intCast(tmp_2)) else break :blk_1 tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp_2)) +% -1));
-                    }).*;
-                    if (tmp >= 0) break :blk t.*.vocab + @as(usize, @intCast(tmp)) else break :blk t.*.vocab - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).*);
-                var id: c_int = str_lookup(str_buffer, t.*.sorted_vocab, t.*.vocab_size);
-                _ = &id;
-                if ((id != -@as(c_int, 1)) and ((blk: {
-                    const tmp = id;
-                    if (tmp >= 0) break :blk t.*.vocab_scores + @as(usize, @intCast(tmp)) else break :blk t.*.vocab_scores - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).* > best_score)) {
-                    best_score = (blk: {
-                        const tmp = id;
-                        if (tmp >= 0) break :blk t.*.vocab_scores + @as(usize, @intCast(tmp)) else break :blk t.*.vocab_scores - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                    }).*;
+        var best_score: f32 = -10000000000.0;
+        var best_id: TokenId = undefined;
+        var best_idx_opt: ?usize = null;
+
+        for (0..n_tokens - 1) |i| {
+            _ = try std.fmt.bufPrintZ(str_buffer, "{s}{s}", .{ t.vocab[@intFromEnum(tokens[i])], t.vocab[@intFromEnum(tokens[i + 1])] });
+
+            if (str_lookup(str_buffer, t.sorted_vocab)) |id| {
+                if (t.vocab_scores[@intFromEnum(id)] > best_score) {
+                    best_score = t.vocab_scores[@intFromEnum(id)];
                     best_id = id;
-                    best_idx = i;
+                    best_idx_opt = i;
                 }
             }
         }
-        if (best_idx == -@as(c_int, 1)) {
-            break;
-        }
-        (blk: {
-            const tmp = best_idx;
-            if (tmp >= 0) break :blk tokens + @as(usize, @intCast(tmp)) else break :blk tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-        }).* = best_id;
-        {
-            var i: c_int = best_idx + @as(c_int, 1);
-            _ = &i;
-            while (i < (n_tokens.* - @as(c_int, 1))) : (i += 1) {
-                (blk: {
-                    const tmp = i;
-                    if (tmp >= 0) break :blk tokens + @as(usize, @intCast(tmp)) else break :blk tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).* = (blk: {
-                    const tmp = i + @as(c_int, 1);
-                    if (tmp >= 0) break :blk tokens + @as(usize, @intCast(tmp)) else break :blk tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-                }).*;
+
+        if (best_idx_opt) |best_idx| {
+            // merge the consecutive pair (best_idx, best_idx+1) into new token best_id
+            tokens[best_idx] = best_id;
+
+            for (best_idx + 1..n_tokens - 1) |i| {
+                tokens[i] = tokens[i + 1];
             }
+
+            n_tokens -= 1; // token length decreased
+        } else {
+            break; // we couldn't find any more pairs to merge, so we're done
         }
-        n_tokens.* -= 1;
     }
-    if (eos != 0) {
-        (blk: {
-            const tmp = blk_1: {
-                const ref = &n_tokens.*;
-                const tmp_2 = ref.*;
-                ref.* += 1;
-                break :blk_1 tmp_2;
-            };
-            if (tmp >= 0) break :blk tokens + @as(usize, @intCast(tmp)) else break :blk tokens - ~@as(usize, @bitCast(@as(isize, @intCast(tmp)) +% -1));
-        }).* = 2;
+
+    // add optional EOS (=2) token, if desired
+    if (put_eos) {
+        tokens[n_tokens] = .EOS;
+        n_tokens += 1;
     }
-    llama.free(@as(?*anyopaque, @ptrCast(str_buffer)));
+
+    return n_tokens;
 }

@@ -45,22 +45,20 @@ pub fn main() !void {
         steps = llama2_transformer.config.seq_len;
     }
 
-    var tok: tokenizer.Tokenizer = undefined;
-    tokenizer.build_tokenizer(&tok, tokenizer_path, llama2_transformer.config.vocab_size);
-    defer tokenizer.free_tokenizer(&tok);
+    var tok = try tokenizer.create_tokenizer(&allocator, tokenizer_path, llama2_transformer.config.vocab_size);
+    defer tokenizer.destroy_tokenizer(&allocator, &tok);
 
     var sampler = try sample.create_sampler(&allocator, llama2_transformer.config.vocab_size, temperature, topp, rng_seed);
-    defer sample.free_sampler(&allocator, &sampler);
+    defer sample.destroy_sampler(&allocator, &sampler);
 
     try generate(&allocator, &llama2_transformer, &tok, &sampler, prompt, steps);
 }
 
 fn generate(allocator: *std.mem.Allocator, arg_transformer: *transformer.Transformer, arg_tokenizer: *tokenizer.Tokenizer, sampler: *sample.Sampler, prompt: [:0]const u8, steps: usize) !void {
-    const prompt_tokens = try allocator.alloc(c_int, prompt.len + 3); // +3 for '\0', ?BOS, ?EOS
+    const prompt_tokens = try allocator.alloc(tokenizer.TokenId, prompt.len + 3); // +3 for '\0', ?BOS, ?EOS
     defer allocator.free(prompt_tokens);
 
-    var num_prompt_tokens: usize = 0;
-    tokenizer.encode(arg_tokenizer, prompt, 1, 0, prompt_tokens.ptr, &num_prompt_tokens); // FIXME
+    const num_prompt_tokens = try tokenizer.encode(allocator, arg_tokenizer, prompt, true, false, prompt_tokens);
 
     if (num_prompt_tokens < 1) {
         std.debug.print("Something is wrong, expected at least 1 prompt token\n", .{});
@@ -68,30 +66,36 @@ fn generate(allocator: *std.mem.Allocator, arg_transformer: *transformer.Transfo
     }
 
     var start: i64 = 0;
-    var next: u16 = undefined;
-    var token: u16 = @intCast(prompt_tokens[0]);
+    var next: tokenizer.TokenId = undefined;
+    var token: tokenizer.TokenId = prompt_tokens[0];
     var pos: usize = 0;
 
     while (pos < steps) {
         const logits = transformer.forward(arg_transformer, token, pos);
 
+        // advance the state machine
         if (pos < num_prompt_tokens - 1) {
-            next = @intCast(prompt_tokens[pos + 1]);
+            // if we are still processing the input prompt, force the next prompt token
+            next = prompt_tokens[pos + 1];
         } else {
+            // otherwise sample the next token from the logits
             next = sample.sample(sampler, logits[0..arg_transformer.config.vocab_size]);
         }
 
         pos += 1;
 
-        if (next == 1) {
+        // data-dependent terminating condition: the BOS (=1) token delimits sequences
+        if (next == .BOS) {
             break;
         }
 
-        const piece: [*c]u8 = tokenizer.decode(arg_tokenizer, token, next);
+        // print the token as string, decode it with the Tokenizer object
+        const piece = tokenizer.decode(arg_tokenizer, token, next);
         tokenizer.safe_printf(piece);
 
         token = next;
 
+        // init the timer here because the first iteration can be slower
         if (start == 0) {
             start = std.time.milliTimestamp();
         }
@@ -99,6 +103,7 @@ fn generate(allocator: *std.mem.Allocator, arg_transformer: *transformer.Transfo
 
     std.debug.print("\n", .{});
 
+    // report achieved tok/s (pos-1 because the timer starts after first iteration)
     if (pos > 1) {
         const end = std.time.milliTimestamp();
         std.debug.print("achieved tok/s: {d:.1}\n", .{(@as(f64, @floatFromInt(pos - @as(c_int, 1))) / @as(f64, @floatFromInt(end - start))) * @as(f64, @floatFromInt(@as(c_int, 1000)))});

@@ -1,21 +1,22 @@
 const std = @import("std");
 
 const transformer = @import("transformer.zig");
+const tokenizer = @import("tokenizer.zig");
 
-pub const ProbIndex = struct {
-    prob: f32 = 0,
-    index: usize = 0,
+const ProbIndex = struct {
+    prob: f32,
+    id: tokenizer.TokenId,
 };
 
 pub const Sampler = struct {
-    vocab_size: usize = 0,
+    vocab_size: usize,
     probindex: []ProbIndex,
-    temperature: f32 = @import("std").mem.zeroes(f32),
-    topp: f32 = @import("std").mem.zeroes(f32),
-    rng_state: c_ulonglong = @import("std").mem.zeroes(c_ulonglong),
+    temperature: f32,
+    topp: f32,
+    rng_state: c_ulonglong,
 };
 
-fn sample_argmax(probabilities: []f32, n: usize) usize {
+fn sample_argmax(probabilities: []f32, n: usize) tokenizer.TokenId {
     var max_i: usize = 0;
     var max_p = probabilities[0];
 
@@ -26,20 +27,20 @@ fn sample_argmax(probabilities: []f32, n: usize) usize {
         }
     }
 
-    return max_i;
+    return @enumFromInt(max_i);
 }
 
-fn sample_mult(probabilities: []f32, n: usize, coin: f32) usize {
+fn sample_mult(probabilities: []f32, n: usize, coin: f32) tokenizer.TokenId {
     var cdf: f32 = 0.0;
 
     for (0..n) |i| {
         cdf += probabilities[i];
         if (coin < cdf) {
-            return i;
+            return @enumFromInt(i);
         }
     }
 
-    return n - 1; // in case of rounding errors
+    return @enumFromInt(n - 1); // in case of rounding errors
 }
 
 fn prob_index_less_than(context: void, lhs: ProbIndex, rhs: ProbIndex) bool {
@@ -49,7 +50,7 @@ fn prob_index_less_than(context: void, lhs: ProbIndex, rhs: ProbIndex) bool {
     return lhs.prob > rhs.prob;
 }
 
-fn sample_topp(probabilities: []f32, n: usize, topp: f32, probindex: []ProbIndex, coin: f32) usize {
+fn sample_topp(probabilities: []f32, n: usize, topp: f32, probindex: []ProbIndex, coin: f32) tokenizer.TokenId {
     // top-p sampling (or "nucleus sampling") samples from the smallest set of
     // tokens that exceed probability topp. This way we never sample tokens that
     // have very low probabilities and are less likely to go "off the rails".
@@ -62,7 +63,7 @@ fn sample_topp(probabilities: []f32, n: usize, topp: f32, probindex: []ProbIndex
     const cutoff = (1.0 - topp) / @as(f32, @floatFromInt(n - 1));
     for (0..n) |i| {
         if (probabilities[i] >= cutoff) {
-            probindex[n0].index = i;
+            probindex[n0].id = @enumFromInt(i);
             probindex[n0].prob = probabilities[i];
             n0 += 1;
         }
@@ -87,11 +88,11 @@ fn sample_topp(probabilities: []f32, n: usize, topp: f32, probindex: []ProbIndex
     for (0..last_idx + 1) |i| {
         cdf += probindex[i].prob;
         if (r < cdf) {
-            return probindex[i].index;
+            return probindex[i].id;
         }
     }
 
-    return probindex[last_idx].index; // in case of rounding errors
+    return probindex[last_idx].id; // in case of rounding errors
 }
 
 pub fn create_sampler(allocator: *std.mem.Allocator, vocab_size: usize, temperature: f32, topp: f32, rng_seed: c_ulonglong) !Sampler {
@@ -104,7 +105,7 @@ pub fn create_sampler(allocator: *std.mem.Allocator, vocab_size: usize, temperat
     };
 }
 
-pub fn free_sampler(allocator: *std.mem.Allocator, sampler: *Sampler) void {
+pub fn destroy_sampler(allocator: *std.mem.Allocator, sampler: *Sampler) void {
     allocator.free(sampler.probindex);
 }
 
@@ -120,16 +121,18 @@ fn random_f32(state: *u64) f32 {
     return @as(f32, @floatFromInt(random_u32(state) >> 8)) / 16777216.0;
 }
 
-pub fn sample(sampler: *Sampler, logits: []f32) u16 {
-    var next: usize = undefined;
-    _ = &next;
+pub fn sample(sampler: *Sampler, logits: []f32) tokenizer.TokenId {
+    var next: tokenizer.TokenId = undefined;
+
     if (sampler.temperature == 0.0) {
         next = sample_argmax(logits, sampler.vocab_size);
     } else {
         for (0..sampler.vocab_size) |q| {
             logits[q] /= sampler.temperature;
         }
+
         transformer.softmax(logits[0..sampler.vocab_size]);
+
         var coin: f32 = random_f32(&sampler.rng_state);
         _ = &coin;
         if ((sampler.topp <= @as(f32, @floatFromInt(@as(c_int, 0)))) or (sampler.topp >= @as(f32, @floatFromInt(@as(c_int, 1))))) {
@@ -138,5 +141,5 @@ pub fn sample(sampler: *Sampler, logits: []f32) u16 {
             next = sample_topp(logits, sampler.vocab_size, sampler.topp, sampler.probindex, coin);
         }
     }
-    return @intCast(next);
+    return next;
 }
