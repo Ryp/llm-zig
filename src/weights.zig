@@ -4,6 +4,8 @@ const transformer = @import("transformer.zig");
 const tensor = @import("tensor/tensor.zig");
 const layout = @import("tensor/layout.zig");
 
+const native_os = @import("builtin").os.tag;
+
 // Only used for getting data from disk
 const SerializedConfig = extern struct {
     dim: u32,
@@ -64,7 +66,11 @@ pub fn open_weights_from_file(checkpoint: [:0]const u8, config: *transformer.Con
 
     std.debug.print("config: {}\n", .{config});
 
-    weights.checkpoint_mmap_ptr = try std.posix.mmap(null, checkpoint_size_bytes, std.posix.PROT.READ, .{ .TYPE = .PRIVATE }, weights.checkpoint_file.handle, 0);
+    weights.checkpoint_mmap_ptr = try switch (native_os) {
+        .linux, .macos => std.posix.mmap(null, checkpoint_size_bytes, std.posix.PROT.READ, .{ .TYPE = .PRIVATE }, weights.checkpoint_file.handle, 0),
+        .windows => @panic("Unsupported OS"),
+        else => @panic("Unsupported OS"),
+    };
     errdefer std.posix.munmap(weights.checkpoint_mmap_ptr);
 
     const weights_slice = std.mem.bytesAsSlice(f32, weights.checkpoint_mmap_ptr[@sizeOf(SerializedConfig)..]);
@@ -75,7 +81,13 @@ pub fn open_weights_from_file(checkpoint: [:0]const u8, config: *transformer.Con
 }
 
 pub fn close_weights_from_file(weights: TransformerWeights) void {
-    std.posix.munmap(weights.checkpoint_mmap_ptr);
+    switch (native_os) {
+        .linux, .macos => {
+            std.posix.munmap(weights.checkpoint_mmap_ptr);
+        },
+        .windows => @panic("Unsupported OS"),
+        else => @panic("Unsupported OS"),
+    }
 
     weights.checkpoint_file.close();
 }
