@@ -103,8 +103,9 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
 
     const kv_dim = @divExact((p.dim * p.n_kv_heads), p.n_heads);
     const kv_mul = @divExact(p.n_heads, p.n_kv_heads); // integer multiplier of the kv sharing in multiquery
-    const head_size = @divExact(p.dim, p.n_heads);
-    const head_size_inv: f32 = 1.0 / std.math.sqrt(@as(f32, @floatFromInt(head_size)));
+    const head_dim = @divExact(p.dim, p.n_heads);
+    const head_dim_rsqrt: f32 = 1.0 / std.math.sqrt(@as(f32, @floatFromInt(head_dim)));
+    const head_dim_inv: f32 = 1.0 / @as(f32, @floatFromInt(head_dim));
 
     // copy the token embedding into x
     const token_embedding = w.token_embedding_table.sub_tensor(0, @intFromEnum(token));
@@ -113,6 +114,7 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
 
     // forward all the layers
     for (0..p.n_layers) |layer_index| {
+        // Attention
         rms_norm(s.xb, s.x, w.rms_attn.sub_tensor(0, layer_index), p.rms_epsilon);
 
         // key and value point to the kv cache
@@ -131,18 +133,18 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
         {
             var i: usize = 0;
             while (i < p.dim) : (i += @as(c_int, 2)) {
-                const current_head_dim = i % head_size;
-                const freq = 1.0 / std.math.pow(f32, p.rope_theta, @as(f32, @floatFromInt(current_head_dim)) / @as(f32, @floatFromInt(head_size)));
+                const current_head_dim = i % head_dim;
+                const freq = 1.0 / std.math.pow(f32, p.rope_theta, @as(f32, @floatFromInt(current_head_dim)) * head_dim_inv);
                 const val = freq * @as(f32, @floatFromInt(pos));
 
                 // FIXME There's a way to get both sin/cos in a better way IIRC
                 const fcr = std.math.cos(val);
                 const fci = std.math.sin(val);
 
-                rotate_pair(s.q.raw_data[i .. i + 2], fcr, fci);
+                rotate_pair_in_place(s.q.raw_data[i .. i + 2], fcr, fci);
 
                 if (i < kv_dim) {
-                    rotate_pair(k_pos.raw_data[i .. i + 2], fcr, fci);
+                    rotate_pair_in_place(k_pos.raw_data[i .. i + 2], fcr, fci);
                 }
             }
         }
@@ -150,7 +152,7 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
         // Grouped-query attention (GQA)
         for (0..p.n_heads) |head_index| {
             // Create aliased tensor to allow manipulating individual heads
-            const q_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_heads, p.dim / p.n_heads }), s.q.raw_data);
+            const q_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_heads, head_dim }), s.q.raw_data);
 
             const q_head = q_head_wise.sub_tensor(0, head_index);
             const attn_score_head = s.attn_score.sub_tensor(0, head_index);
@@ -161,18 +163,18 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
             for (0..pos + 1) |t| {
                 // get the key vector for this head and at this timestep
                 const k_t_pos = k_layer.sub_tensor(0, t);
-                const k_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_kv_heads, head_size }), k_t_pos.raw_data);
+                const k_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_kv_heads, head_dim }), k_t_pos.raw_data);
                 const k_head = k_head_wise.sub_tensor(0, kv_head_index);
 
                 // calculate the attention score as the dot product of q and k
-                attn_score_head.raw_data[t] = dot(q_head, k_head) * head_size_inv;
+                attn_score_head.raw_data[t] = dot(q_head, k_head) * head_dim_rsqrt;
             }
 
             // softmax the scores to get attention weights, from 0..pos inclusively
             softmax(attn_score_head.raw_data[0 .. pos + 1]);
 
             // Create aliased tensor to allow manipulating individual heads
-            const xb_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_heads, p.dim / p.n_heads }), s.xb.raw_data);
+            const xb_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_heads, head_dim }), s.xb.raw_data);
             const xb_head = xb_head_wise.sub_tensor(0, head_index);
 
             // weighted sum of the values, store back into xb
@@ -181,11 +183,11 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
             for (0..pos + 1) |t| {
                 // get the value vector for this head and at this timestep
                 const v_t_pos = v_layer.sub_tensor(0, t);
-                const v_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_kv_heads, head_size }), v_t_pos.raw_data);
+                const v_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_kv_heads, head_dim }), v_t_pos.raw_data);
                 const v_head = v_head_wise.sub_tensor(0, kv_head_index);
 
                 // accumulate the weighted value into xb
-                for (0..head_size) |i| {
+                for (0..head_dim) |i| {
                     xb_head.raw_data[i] += attn_score_head.raw_data[t] * v_head.raw_data[i];
                 }
             }
@@ -199,6 +201,7 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
             x_elt.* += xb2_elt;
         }
 
+        // MLP
         rms_norm(s.xb, s.x, w.rms_ffn.sub_tensor(0, layer_index), p.rms_epsilon);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -226,7 +229,7 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
     return s.logits.raw_data;
 }
 
-fn rotate_pair(pair: []f32, r: f32, i: f32) void {
+fn rotate_pair_in_place(pair: []f32, r: f32, i: f32) void {
     const rslt: [2]f32 = .{
         pair[0] * r - pair[1] * i,
         pair[0] * i + pair[1] * r,
@@ -235,16 +238,16 @@ fn rotate_pair(pair: []f32, r: f32, i: f32) void {
     @memcpy(pair, &rslt);
 }
 
-fn rms_norm(o: tensor.Tensor(f32, 1), x: tensor.Tensor(f32, 1), w: tensor.ConstTensor(f32, 1), epsilon: f32) void {
-    const len = o.layout.shape[0];
+fn rms_norm(output: tensor.Tensor(f32, 1), x: tensor.Tensor(f32, 1), w: tensor.ConstTensor(f32, 1), epsilon: f32) void {
+    const len = output.layout.shape[0];
 
     // Make sure tensors are continuous
-    std.debug.assert(o.layout.stride[0] == 1);
+    std.debug.assert(output.layout.stride[0] == 1);
     std.debug.assert(x.layout.stride[0] == 1);
     // Make sure the shape is consistent
-    std.debug.assert(o.layout.shape[0] == len);
+    std.debug.assert(output.layout.shape[0] == len);
     std.debug.assert(x.layout.shape[0] == len);
-    std.debug.assert(o.raw_data.len == len);
+    std.debug.assert(output.raw_data.len == len);
     std.debug.assert(x.raw_data.len == len);
 
     std.debug.assert(w.layout.shape[0] == len);
@@ -257,7 +260,7 @@ fn rms_norm(o: tensor.Tensor(f32, 1), x: tensor.Tensor(f32, 1), w: tensor.ConstT
 
     // normalize and scale
     for (0..len) |i| {
-        o.raw_data[i] = w.raw_data[i] * (ss * x.raw_data[i]);
+        output.raw_data[i] = w.raw_data[i] * (ss * x.raw_data[i]);
     }
 }
 
@@ -307,15 +310,15 @@ fn swiglu(a: tensor.Tensor(f32, 1), b: tensor.Tensor(f32, 1)) void {
 
 // W (d,n) @ x (n,) -> xout (d,)
 // FIXME Tensor n2 must be const!
-fn gemm(o: tensor.Tensor(f32, 1), x: tensor.Tensor(f32, 1), w: tensor.ConstTensor(f32, 2)) void {
-    const o_size = o.layout.shape[0];
+fn gemm(output: tensor.Tensor(f32, 1), x: tensor.Tensor(f32, 1), w: tensor.ConstTensor(f32, 2)) void {
+    const o_size = output.layout.shape[0];
     const x_size = x.layout.shape[0];
 
     std.debug.assert(o_size == w.layout.shape[0]);
     std.debug.assert(x_size == w.layout.shape[1]);
 
     for (0..o_size) |i| {
-        o.raw_data[i] = dot_const_b(x, w.sub_tensor(0, i));
+        output.raw_data[i] = dot_const_b(x, w.sub_tensor(0, i));
     }
 }
 
