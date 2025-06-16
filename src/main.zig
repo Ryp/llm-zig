@@ -28,12 +28,12 @@ pub fn main() !void {
 
     // FIXME Args parsing goes here
 
-    if (@as(f64, @floatCast(temperature)) < 0.0) {
-        temperature = @as(f32, @floatCast(0.0));
+    if (temperature < 0.0) {
+        temperature = 0.0;
     }
 
-    if ((@as(f64, @floatCast(topp)) < 0.0) or (1.0 < @as(f64, @floatCast(topp)))) {
-        topp = @as(f32, @floatCast(0.9));
+    if (topp < 0.0 or 1.0 < topp) {
+        topp = 0.9;
     }
 
     var llama2_transformer: transformer.Transformer = undefined;

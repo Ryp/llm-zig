@@ -13,7 +13,7 @@ const SerializedConfig = extern struct {
     n_layers: u32,
     n_heads: u32,
     n_kv_heads: u32,
-    vocab_size: u32,
+    vocab_size: i32,
     seq_len: u32,
 };
 
@@ -52,15 +52,13 @@ pub fn open_weights_from_file(checkpoint: [:0]const u8, config: *transformer.Con
     const bytes_read = try weights.checkpoint_file.read(config_bytes);
     std.debug.assert(bytes_read == config_bytes.len);
 
-    std.debug.assert(@as(i32, @bitCast(serialized_config.vocab_size)) > 0);
-
     config.* = .{
         .dim = serialized_config.dim,
         .hidden_dim = serialized_config.hidden_dim,
         .n_layers = serialized_config.n_layers,
         .n_heads = serialized_config.n_heads,
         .n_kv_heads = serialized_config.n_kv_heads,
-        .vocab_size = serialized_config.vocab_size,
+        .vocab_size = @intCast(serialized_config.vocab_size),
         .seq_len = serialized_config.seq_len,
     };
 

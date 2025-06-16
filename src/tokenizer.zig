@@ -92,8 +92,7 @@ pub fn create_tokenizer(allocator: *std.mem.Allocator, tokenizer_path: [:0]const
     return t;
 }
 
-fn compare_tokens_less_than(context: void, a: TokenIndex, b: TokenIndex) bool {
-    _ = context;
+fn compare_tokens_less_than(_: void, a: TokenIndex, b: TokenIndex) bool {
     return std.mem.orderZ(u8, a.str, b.str) == .lt;
 }
 
