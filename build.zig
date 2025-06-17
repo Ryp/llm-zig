@@ -16,8 +16,6 @@ pub fn build(b: *std.Build) void {
     const exe_options = b.addOptions();
     exe.root_module.addOptions("build_options", exe_options);
 
-    exe.linkLibC(); // FIXME remove this
-
     if (no_bin) {
         b.getInstallStep().dependOn(&exe.step);
     } else {
