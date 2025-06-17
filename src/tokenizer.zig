@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const Tokenizer = struct {
-    vocab: [][:0]const u8,
+    vocab_strings: [][:0]const u8,
     vocab_scores: []f32,
     sorted_vocab: []TokenIndex,
     vocab_size: usize,
@@ -26,8 +26,8 @@ pub fn create_tokenizer(allocator: *std.mem.Allocator, tokenizer_path: [:0]const
 
     t.vocab_size = vocab_size;
 
-    t.vocab = try allocator.alloc([:0]const u8, vocab_size);
-    errdefer allocator.free(t.vocab);
+    t.vocab_strings = try allocator.alloc([:0]const u8, vocab_size);
+    errdefer allocator.free(t.vocab_strings);
 
     t.vocab_scores = try allocator.alloc(f32, vocab_size);
     errdefer allocator.free(t.vocab_scores);
@@ -42,39 +42,18 @@ pub fn create_tokenizer(allocator: *std.mem.Allocator, tokenizer_path: [:0]const
     };
     defer tokenizer_file.close();
 
-    var max_token_length: i32 = undefined;
-
-    {
-        const max_token_length_bytes = std.mem.asBytes(&max_token_length);
-        const bytes_read = try tokenizer_file.read(max_token_length_bytes);
-        std.debug.assert(bytes_read == max_token_length_bytes.len);
-    }
-
-    t.max_token_length = @intCast(max_token_length);
+    t.max_token_length = @intCast(try tokenizer_file.reader().readInt(i32, .little));
 
     for (0..vocab_size) |i| {
-        {
-            const score_bytes = std.mem.asBytes(&t.vocab_scores[i]);
-            const bytes_read = try tokenizer_file.read(score_bytes);
-            std.debug.assert(bytes_read == score_bytes.len);
-        }
+        t.vocab_scores[i] = @bitCast(try tokenizer_file.reader().readInt(u32, .little));
+        const string_len: usize = @intCast(try tokenizer_file.reader().readInt(i32, .little));
 
-        var len_i32: i32 = undefined;
+        const string = try allocator.allocSentinel(u8, string_len, 0);
+        errdefer allocator.free(string);
 
-        {
-            const len_bytes = std.mem.asBytes(&len_i32);
-            const bytes_read = try tokenizer_file.read(len_bytes);
-            std.debug.assert(bytes_read == len_bytes.len);
-        }
+        try tokenizer_file.reader().readNoEof(string[0..string_len]);
 
-        const len: usize = @intCast(len_i32);
-        const vocab_i = try allocator.allocSentinel(u8, len, 0);
-        errdefer allocator.free(vocab_i);
-
-        const bytes_read = try tokenizer_file.read(vocab_i);
-        std.debug.assert(bytes_read == len);
-
-        t.vocab[i] = vocab_i;
+        t.vocab_strings[i] = string;
     }
 
     t.sorted_vocab = try allocator.alloc(TokenIndex, vocab_size);
@@ -82,7 +61,7 @@ pub fn create_tokenizer(allocator: *std.mem.Allocator, tokenizer_path: [:0]const
 
     for (0..t.vocab_size) |i| {
         t.sorted_vocab[i] = .{
-            .str = t.vocab[i],
+            .str = t.vocab_strings[i],
             .id = @enumFromInt(i),
         };
     }
@@ -97,21 +76,17 @@ fn compare_tokens_less_than(_: void, a: TokenIndex, b: TokenIndex) bool {
 }
 
 pub fn destroy_tokenizer(allocator: *std.mem.Allocator, t: *Tokenizer) void {
-    {
-        var i: usize = 0;
-        _ = &i;
-        while (i < t.*.vocab_size) : (i += 1) {
-            allocator.free(t.vocab[i]);
-        }
+    for (t.vocab_strings) |string| {
+        allocator.free(string);
     }
 
-    allocator.free(t.vocab);
+    allocator.free(t.vocab_strings);
     allocator.free(t.vocab_scores);
     allocator.free(t.sorted_vocab);
 }
 
 pub fn decode(t: *Tokenizer, prev_token: TokenId, token: TokenId) [:0]const u8 {
-    var piece = t.vocab[@intFromEnum(token)];
+    var piece = t.vocab_strings[@intFromEnum(token)];
 
     // following BOS (1) token, sentencepiece decoder strips any leading whitespace (see PR #89)
     if (prev_token == .BOS and piece[0] == ' ') {
@@ -236,7 +211,7 @@ pub fn encode(allocator: *std.mem.Allocator, t: *Tokenizer, text: [:0]const u8, 
         var best_idx_opt: ?usize = null;
 
         for (0..n_tokens - 1) |i| {
-            _ = try std.fmt.bufPrintZ(str_buffer, "{s}{s}", .{ t.vocab[@intFromEnum(tokens[i])], t.vocab[@intFromEnum(tokens[i + 1])] });
+            _ = try std.fmt.bufPrintZ(str_buffer, "{s}{s}", .{ t.vocab_strings[@intFromEnum(tokens[i])], t.vocab_strings[@intFromEnum(tokens[i + 1])] });
 
             if (str_lookup(str_buffer, t.sorted_vocab)) |id| {
                 if (t.vocab_scores[@intFromEnum(id)] > best_score) {
