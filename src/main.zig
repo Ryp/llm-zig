@@ -1,12 +1,12 @@
 const std = @import("std");
 
+const build_options = @import("build_options");
+
 const tokenizer = @import("tokenizer.zig");
 const sample = @import("sample.zig");
 const transformer = @import("transformer.zig");
 
 pub fn main() !void {
-    const checkpoint_path = "../stories15M.bin";
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
         const check = gpa.deinit();
@@ -15,43 +15,50 @@ pub fn main() !void {
 
     var allocator = gpa.allocator();
 
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
+    if (comptime build_options.enable_cuda) {
+        const cuda = @import("cuda.zig");
+        cuda.cuda_main(&allocator);
+    } else {
+        const checkpoint_path = "../stories15M.bin";
 
-    const tokenizer_path = "tokenizer.bin";
-    const temperature: f32 = 1.0;
-    const topp: f32 = 0.9;
-    var steps: usize = 256;
+        var args = try std.process.argsWithAllocator(allocator);
+        defer args.deinit();
 
-    const prompt = "What does Claire like?"; // FIXME
-    const rng_seed: c_ulonglong = 0; // FIXME
+        const tokenizer_path = "tokenizer.bin";
+        const temperature: f32 = 1.0;
+        const topp: f32 = 0.9;
+        var steps: usize = 256;
 
-    // FIXME Args parsing goes here
+        const prompt = "What does Claire like?"; // FIXME
+        const rng_seed: c_ulonglong = 0; // FIXME
 
-    if (temperature < 0.0) {
-        temperature = 0.0;
+        // FIXME Args parsing goes here
+
+        if (temperature < 0.0) {
+            temperature = 0.0;
+        }
+
+        if (topp < 0.0 or 1.0 < topp) {
+            topp = 0.9;
+        }
+
+        var llama2_transformer: transformer.Transformer = undefined;
+
+        try transformer.create_transformer(&allocator, &llama2_transformer, checkpoint_path);
+        defer transformer.destroy_transformer(&allocator, &llama2_transformer);
+
+        if (steps == 0 or steps > llama2_transformer.config.seq_len) {
+            steps = llama2_transformer.config.seq_len;
+        }
+
+        var tok = try tokenizer.create_tokenizer(&allocator, tokenizer_path, llama2_transformer.config.vocab_size);
+        defer tokenizer.destroy_tokenizer(&allocator, &tok);
+
+        var sampler = try sample.create_sampler(&allocator, llama2_transformer.config.vocab_size, temperature, topp, rng_seed);
+        defer sample.destroy_sampler(&allocator, &sampler);
+
+        try generate(&allocator, &llama2_transformer, &tok, &sampler, prompt, steps);
     }
-
-    if (topp < 0.0 or 1.0 < topp) {
-        topp = 0.9;
-    }
-
-    var llama2_transformer: transformer.Transformer = undefined;
-
-    try transformer.create_transformer(&allocator, &llama2_transformer, checkpoint_path);
-    defer transformer.destroy_transformer(&allocator, &llama2_transformer);
-
-    if (steps == 0 or steps > llama2_transformer.config.seq_len) {
-        steps = llama2_transformer.config.seq_len;
-    }
-
-    var tok = try tokenizer.create_tokenizer(&allocator, tokenizer_path, llama2_transformer.config.vocab_size);
-    defer tokenizer.destroy_tokenizer(&allocator, &tok);
-
-    var sampler = try sample.create_sampler(&allocator, llama2_transformer.config.vocab_size, temperature, topp, rng_seed);
-    defer sample.destroy_sampler(&allocator, &sampler);
-
-    try generate(&allocator, &llama2_transformer, &tok, &sampler, prompt, steps);
 }
 
 fn generate(allocator: *std.mem.Allocator, arg_transformer: *transformer.Transformer, arg_tokenizer: *tokenizer.Tokenizer, sampler: *sample.Sampler, prompt: [:0]const u8, steps: usize) !void {

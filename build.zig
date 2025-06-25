@@ -12,14 +12,24 @@ pub fn build(b: *std.Build) void {
     });
 
     const no_bin = b.option(bool, "no-bin", "skip emitting binary") orelse false;
+    const enable_cuda = b.option(bool, "cuda", "enable CUDA support") orelse false;
 
     const exe_options = b.addOptions();
+    exe_options.addOption(bool, "enable_cuda", enable_cuda);
     exe.root_module.addOptions("build_options", exe_options);
 
     if (no_bin) {
         b.getInstallStep().dependOn(&exe.step);
     } else {
         b.installArtifact(exe);
+    }
+
+    if (enable_cuda) {
+        exe.linkSystemLibrary("cuda");
+        exe.linkSystemLibrary("nvrtc");
+        //exe.linkSystemLibrary("cudart"); // Link against the CUDA runtime library
+        exe.addLibraryPath(std.Build.LazyPath{ .cwd_relative = "/usr/local/cuda/lib64" });
+        exe.addIncludePath(std.Build.LazyPath{ .cwd_relative = "/usr/local/cuda/include" });
     }
 
     const run_cmd = b.addRunArtifact(exe);
