@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const Tuple = @import("tuple.zig").Vector;
+const tuple = @import("tuple.zig");
 const Shape = @import("shape.zig").Shape;
 const Stride = @import("stride.zig").Stride;
 const stride_left = @import("stride.zig").left;
@@ -21,7 +21,19 @@ pub fn Layout(comptime rank: usize) type {
             return size;
         }
 
-        pub fn element_offset(self: @This(), element_index: Tuple(usize, rank)) usize {
+        // Synctatic sugar for accessing elements in a layout.
+        // If rank is 1, it is a simple scalar.
+        pub const Accessor = if (rank == 1) usize else tuple.Vector(usize, rank);
+
+        pub fn element_offset(self: @This(), element_accessor: Accessor) usize {
+            if (rank == 1) {
+                return self.element_offset_impl(.{element_accessor});
+            } else {
+                return self.element_offset_impl(element_accessor);
+            }
+        }
+
+        fn element_offset_impl(self: @This(), element_index: tuple.Vector(usize, rank)) usize {
             var offset: usize = 0;
 
             inline for (element_index, self.stride) |index_elt, stride_elt| {

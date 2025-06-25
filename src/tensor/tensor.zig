@@ -37,11 +37,21 @@ pub fn GenericTensor(comptime is_const: bool, comptime scalar_type: type, compti
             };
         }
 
-        const Vector = tuple.Vector(usize, rank);
-
-        pub fn at(self: *Self, element: Vector) *scalar_type {
+        pub fn at(self: *const Self, element: LayoutType.Accessor) *scalar_type {
             const element_offset = self.layout.element_offset(element);
             return &self.raw_data[element_offset];
+        }
+
+        pub fn get(self: *const Self, element: LayoutType.Accessor) scalar_type {
+            const element_offset = self.layout.element_offset(element);
+            return self.raw_data[element_offset];
+        }
+
+        pub fn to_const(self: Self) GenericTensor(true, self.scalar_type, self.rank) {
+            return .{
+                .layout = self.layout,
+                .raw_data = self.raw_data,
+            };
         }
 
         pub fn sub_tensor(self: Self, comptime sub_rank: usize, offset: usize) GenericTensor(is_const, self.scalar_type, self.rank - 1) {

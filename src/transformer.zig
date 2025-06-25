@@ -115,7 +115,7 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
     // forward all the layers
     for (0..p.n_layers) |layer_index| {
         // Attention
-        rms_norm(s.xb, s.x, w.rms_attn.sub_tensor(0, layer_index), p.rms_epsilon);
+        rms_norm(s.xb, s.x.to_const(), w.rms_attn.sub_tensor(0, layer_index), p.rms_epsilon);
 
         // key and value point to the kv cache
         const k_layer = s.key_cache.sub_tensor(0, layer_index);
@@ -124,10 +124,10 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
         const k_pos = k_layer.sub_tensor(0, pos);
         const v_pos = v_layer.sub_tensor(0, pos);
 
-        gemm(s.q, s.xb, w.wq.sub_tensor(0, layer_index));
+        gemm(s.q, s.xb.to_const(), w.wq.sub_tensor(0, layer_index));
 
-        gemm(k_pos, s.xb, w.wk.sub_tensor(0, layer_index));
-        gemm(v_pos, s.xb, w.wv.sub_tensor(0, layer_index));
+        gemm(k_pos, s.xb.to_const(), w.wk.sub_tensor(0, layer_index));
+        gemm(v_pos, s.xb.to_const(), w.wv.sub_tensor(0, layer_index));
 
         // RoPE relative positional encoding: complex-valued rotate q and k in each head
         {
@@ -152,7 +152,7 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
         // Grouped-query attention (GQA)
         for (0..p.n_heads) |head_index| {
             // Create aliased tensor to allow manipulating individual heads
-            const q_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_heads, head_dim }), s.q.raw_data);
+            const q_head_wise = tensor.ConstTensor(f32, 2).init(layout.right(2, .{ p.n_heads, head_dim }), s.q.raw_data);
 
             const q_head = q_head_wise.sub_tensor(0, head_index);
             const attn_score_head = s.attn_score.sub_tensor(0, head_index);
@@ -163,11 +163,11 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
             for (0..pos + 1) |t| {
                 // get the key vector for this head and at this timestep
                 const k_t_pos = k_layer.sub_tensor(0, t);
-                const k_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_kv_heads, head_dim }), k_t_pos.raw_data);
+                const k_head_wise = tensor.ConstTensor(f32, 2).init(layout.right(2, .{ p.n_kv_heads, head_dim }), k_t_pos.raw_data);
                 const k_head = k_head_wise.sub_tensor(0, kv_head_index);
 
                 // calculate the attention score as the dot product of q and k
-                attn_score_head.raw_data[t] = dot(q_head, k_head) * head_dim_rsqrt;
+                attn_score_head.at(t).* = dot(q_head, k_head) * head_dim_rsqrt;
             }
 
             // softmax the scores to get attention weights, from 0..pos inclusively
@@ -183,36 +183,36 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
             for (0..pos + 1) |t| {
                 // get the value vector for this head and at this timestep
                 const v_t_pos = v_layer.sub_tensor(0, t);
-                const v_head_wise = tensor.Tensor(f32, 2).init(layout.right(2, .{ p.n_kv_heads, head_dim }), v_t_pos.raw_data);
+                const v_head_wise = tensor.ConstTensor(f32, 2).init(layout.right(2, .{ p.n_kv_heads, head_dim }), v_t_pos.raw_data);
                 const v_head = v_head_wise.sub_tensor(0, kv_head_index);
 
                 // accumulate the weighted value into xb
                 for (0..head_dim) |i| {
-                    xb_head.raw_data[i] += attn_score_head.raw_data[t] * v_head.raw_data[i];
+                    xb_head.at(i).* += attn_score_head.get(t) * v_head.get(i);
                 }
             }
         }
 
         // final matmul to get the output of the attention
-        gemm(s.xb2, s.xb, w.wo.sub_tensor(0, layer_index));
+        gemm(s.xb2, s.xb.to_const(), w.wo.sub_tensor(0, layer_index));
 
         // residual connection back into x
-        for (s.x.raw_data, s.xb2.raw_data) |*x_elt, xb2_elt| {
-            x_elt.* += xb2_elt;
+        for (0..s.x.layout.shape[0]) |i| {
+            s.x.at(i).* += s.xb2.get(i);
         }
 
         // MLP
-        rms_norm(s.xb, s.x, w.rms_ffn.sub_tensor(0, layer_index), p.rms_epsilon);
+        rms_norm(s.xb, s.x.to_const(), w.rms_ffn.sub_tensor(0, layer_index), p.rms_epsilon);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        gemm(s.hb, s.xb, w.w1.sub_tensor(0, layer_index));
-        gemm(s.hb2, s.xb, w.w3.sub_tensor(0, layer_index));
+        gemm(s.hb, s.xb.to_const(), w.w1.sub_tensor(0, layer_index));
+        gemm(s.hb2, s.xb.to_const(), w.w3.sub_tensor(0, layer_index));
 
         swiglu(s.hb, s.hb2);
 
         // final matmul to get the output of the ffn
-        gemm(s.xb, s.hb, w.w2.sub_tensor(0, layer_index));
+        gemm(s.xb, s.hb.to_const(), w.w2.sub_tensor(0, layer_index));
 
         // residual connection
         for (s.x.raw_data, s.xb.raw_data) |*x_elt, xb_elt| {
@@ -220,11 +220,11 @@ pub fn forward(arg_transformer: *Transformer, token: tokenizer.TokenId, pos: usi
         }
     }
 
-    rms_norm(s.x, s.x, w.rms_final, p.rms_epsilon);
+    rms_norm(s.x, s.x.to_const(), w.rms_final, p.rms_epsilon);
 
     // classifier into logits
     // Assuming we're reusing the same embedding table for this step
-    gemm(s.logits, s.x, w.token_embedding_table);
+    gemm(s.logits, s.x.to_const(), w.token_embedding_table);
 
     return s.logits.raw_data;
 }
@@ -238,7 +238,7 @@ fn rotate_pair_in_place(pair: []f32, r: f32, i: f32) void {
     @memcpy(pair, &rslt);
 }
 
-fn rms_norm(output: tensor.Tensor(f32, 1), x: tensor.Tensor(f32, 1), w: tensor.ConstTensor(f32, 1), epsilon: f32) void {
+fn rms_norm(output: tensor.Tensor(f32, 1), x: tensor.ConstTensor(f32, 1), w: tensor.ConstTensor(f32, 1), epsilon: f32) void {
     const len = output.layout.shape[0];
 
     // Make sure tensors are continuous
@@ -260,7 +260,7 @@ fn rms_norm(output: tensor.Tensor(f32, 1), x: tensor.Tensor(f32, 1), w: tensor.C
 
     // normalize and scale
     for (0..len) |i| {
-        output.raw_data[i] = w.raw_data[i] * (ss * x.raw_data[i]);
+        output.at(i).* = w.get(i) * (ss * x.get(i));
     }
 }
 
@@ -309,8 +309,7 @@ fn swiglu(a: tensor.Tensor(f32, 1), b: tensor.Tensor(f32, 1)) void {
 }
 
 // W (d,n) @ x (n,) -> xout (d,)
-// FIXME Tensor n2 must be const!
-fn gemm(output: tensor.Tensor(f32, 1), x: tensor.Tensor(f32, 1), w: tensor.ConstTensor(f32, 2)) void {
+fn gemm(output: tensor.Tensor(f32, 1), x: tensor.ConstTensor(f32, 1), w: tensor.ConstTensor(f32, 2)) void {
     const o_size = output.layout.shape[0];
     const x_size = x.layout.shape[0];
 
@@ -318,29 +317,11 @@ fn gemm(output: tensor.Tensor(f32, 1), x: tensor.Tensor(f32, 1), w: tensor.Const
     std.debug.assert(x_size == w.layout.shape[1]);
 
     for (0..o_size) |i| {
-        output.raw_data[i] = dot_const_b(x, w.sub_tensor(0, i));
+        output.at(i).* = dot(x, w.sub_tensor(0, i));
     }
 }
 
-// FIXME Improve typing to reuse same Tensor class for const and non-const
-fn dot_const_b(a: tensor.Tensor(f32, 1), b: tensor.ConstTensor(f32, 1)) f32 {
-    // Make sure tensors are continuous
-    std.debug.assert(a.layout.stride[0] == 1);
-    std.debug.assert(b.layout.stride[0] == 1);
-    // Make sure the shape is consistent
-    std.debug.assert(a.layout.shape[0] == a.raw_data.len);
-    std.debug.assert(b.layout.shape[0] == b.raw_data.len);
-
-    var result: f32 = 0.0;
-
-    for (a.raw_data, b.raw_data) |a_elt, b_elt| {
-        result += a_elt * b_elt;
-    }
-
-    return result;
-}
-
-fn dot(a: tensor.Tensor(f32, 1), b: tensor.Tensor(f32, 1)) f32 {
+fn dot(a: tensor.ConstTensor(f32, 1), b: tensor.ConstTensor(f32, 1)) f32 {
     // Make sure tensors are continuous
     std.debug.assert(a.layout.stride[0] == 1);
     std.debug.assert(b.layout.stride[0] == 1);
